@@ -1,0 +1,60 @@
+\newcommand{\myfontsize}[1]{\fontsize{#1}{#1}\selectfont}
+
+\newcommand{\cmd}[1]{\texttt{#1}\xspace}
+\newcommand{\edg}[2]{\ensuremath{(#1, #2)}}
+\newcommand{\ass}[3]{\ensuremath{\langle#1, #2, #3\rangle}}
+\newcommand{\rev}[1]{{\color{red}$\gg$ #1 $\ll$}}
+\newcommand{\cor}[1]{{\color{blue}\textbf{#1}}}
+\newcommand{\anot}[1]{\nolinkurl{#1}\xspace}
+\newcommand{\estr}[1]{\emph{#1}\xspace}
+\newcommand{\dest}[1]{\textbf{#1}\xspace}
+\let\cite=\citep
+
+\clubpenalty=10000
+\widowpenalty=10000
+\hyphenpenalty=1000
+\exhyphenpenalty=10000
+
+%-----------------------------------------
+\newcommand{\toolnameME}{\textbf{JaBUTi/ME}\xspace}
+\newcommand{\tooldescrME}{Java Bytecode Understanding and Testing Tool for Java Micro Edition\xspace}
+
+\newcommand{\toolname}{\textbf{JaBUTi}\xspace}
+\newcommand{\tooldescr}{Java Bytecode Understanding and Testing Tool\xspace}
+
+\newcommand{\pk}[1]{\mbox{{\sffamily #1}\xspace}}
+
+\newcommand{\IG}{$\mathcal{IG}$\xspace}
+\newcommand{\DU}{$\mathcal{DUG}$\xspace}
+\newcommand{\up}[1]{$^{\textup{\footnotesize #1}}$}
+\newcommand{\pc}{\textsf{pc}\xspace}
+\newcommand{\hpt}[1]{\textbf{#1}}        %destacar texto em portugues
+\newcommand{\hen}[1]{\textit{#1}}        %destacar texto em inglês
+\newcommand{\tablefontsize}{\footnotesize}
+\newcommand{\tabledatasize}{\scriptsize}
+
+
+%Critérios all-nodes
+\newcommand{\aneid}{todos-nós-independentes-de-exceção\xspace}
+\newcommand{\anei}{\pk{Todos-Nós$_{ei}$}\xspace}
+\newcommand{\anedd}{todos-nós-dependentes-de-exceção\xspace}
+\newcommand{\aned}{\pk{Todos-Nós$_{ed}$}\xspace}
+
+%Critérios all-edges
+\newcommand{\aeeid}{todas-arestas-independentes-de-exceção\xspace}
+\newcommand{\aeei}{\pk{Todas-Arestas$_{ei}$}\xspace}
+\newcommand{\aeedd}{todas-arestas-dependentes-de-exceção\xspace}
+\newcommand{\aeed}{\pk{Todas-Arestas$_{ed}$}\xspace}
+
+%Critérios all-uses
+\newcommand{\aueid}{todos-usos-independentes-de-exceção\xspace}
+\newcommand{\auei}{\pk{Todos-Usos$_{ei}$}\xspace}
+\newcommand{\auedd}{todos-usos-dependentes-de-exceção\xspace}
+\newcommand{\aued}{\pk{Todos-Usos$_{ed}$}\xspace}
+
+%Critérios all-pot-uses
+\newcommand{\apueid}{todos-potenciais-usos-independentes-de-exceção\xspace}
+\newcommand{\apuei}{\pk{Todos-Pot-Usos$_{ei}$}\xspace}
+\newcommand{\apuedd}{todos-potenciais-usos-independentes-de-exceção\xspace}
+\newcommand{\apued}{\pk{Todos-Pot-Usos$_{ed}$}\xspace}
+
