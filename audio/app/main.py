@@ -265,11 +265,12 @@ async def benchmark_endpoint(request: BenchmarkRequest):
     profiles = _benchmark_config.get("profiles", {})
     profile = profiles.get(request.profile, profiles.get("quick", {}))
 
+    # Pre-gera audio pra medir so o ASR no benchmark
+    _pregen_wav = synthesize("Teste de inferência de reconhecimento de voz com whisper.")
+
     def asr_benchmark_fn():
-        """Gera áudio de teste e transcreve."""
-        test_phrase = "Teste de inferência de áudio."
-        wav = synthesize(test_phrase)
-        return transcribe(wav)
+        """Transcreve audio pre-gerado (mede so ASR, sem TTS)."""
+        return transcribe(_pregen_wav)
 
     try:
         loop = asyncio.get_event_loop()
