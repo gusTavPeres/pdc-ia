@@ -1,19 +1,17 @@
-FROM python:3.11-slim
+FROM nvidia/cuda:12.1.1-runtime-ubuntu22.04
 
-# Dependências do sistema para áudio
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libsndfile1 \
-    ffmpeg \
-    curl \
+    python3 python3-pip python3-dev \
+    libsndfile1 ffmpeg curl \
     && rm -rf /var/lib/apt/lists/*
+
+RUN python3 -m pip install --upgrade pip
 
 WORKDIR /app
 
-# Dependências Python compartilhadas
 COPY shared/requirements.txt /app/shared_req.txt
 RUN pip install --no-cache-dir -r /app/shared_req.txt
 
-# Dependências de áudio
 RUN pip install --no-cache-dir \
     faster-whisper==1.0.3 \
     soundfile \
@@ -22,10 +20,8 @@ RUN pip install --no-cache-dir \
     "uvicorn[standard]" \
     python-multipart
 
-# piper-tts e sua dependência pathvalidate
 RUN pip install --no-cache-dir piper-tts pathvalidate
 
-# Código da aplicação
 COPY audio/app/ /app/app/
 
 ENV PYTHONPATH=/app

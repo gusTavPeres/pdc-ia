@@ -37,17 +37,18 @@ def load_asr(config: dict) -> None:
 
     model_id = config.get("model_id", "small")
 
-    # Detecta dispositivo
+    # Detecta dispositivo via ctranslate2 (nao depende de torch)
     gpu_mode = os.environ.get("PDC_GPU_MODE", "auto")
     try:
-        import torch
-        if torch.cuda.is_available() and gpu_mode != "cpu":
+        import ctranslate2
+        cuda_types = ctranslate2.get_supported_compute_types("cuda")
+        if cuda_types and gpu_mode != "cpu":
             _asr_device = "cuda"
             _asr_compute_type = "float16"
         else:
             _asr_device = "cpu"
             _asr_compute_type = "int8"
-    except ImportError:
+    except Exception:
         _asr_device = "cpu"
         _asr_compute_type = "int8"
 
