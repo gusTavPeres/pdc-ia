@@ -1,0 +1,28 @@
+services:
+  pdc-vision:
+    build:
+      context: ..
+      dockerfile: vision/Dockerfile
+    container_name: pdc-vision
+    ports:
+      - "8010:8000"
+    volumes:
+      - ../config:/app/config:ro
+      - ../data:/app/data
+      - ../results:/app/results
+      - ../shared:/app/shared:ro
+      - /sys:/sys:ro
+    environment:
+      - PDC_FRONT=vision
+      - PDC_GPU_MODE=auto
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    shm_size: '256m'
+    restart: unless-stopped

@@ -1,0 +1,19 @@
+services:
+  pdc-audio:
+    build:
+      context: ..
+      dockerfile: audio/Dockerfile
+    container_name: pdc-audio
+    ports:
+      - "8012:8000"
+    volumes:
+      - ../config:/app/config:ro
+      - ../data:/app/data
+      - ../results:/app/results
+      - ../shared:/app/shared:ro
+      - /sys:/sys:ro
+    environment:
+      - PDC_FRONT=audio
+      - PDC_GPU_MODE=auto
+    shm_size: '256m'
+    restart: unless-stopped

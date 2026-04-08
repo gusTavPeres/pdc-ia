@@ -1,0 +1,26 @@
+# Data e modelos
+data/models/
+data/datasets/
+*.gguf
+*.pt
+*.onnx
+*.onnx.json
+
+# Results (gerados)
+results/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# System
+.DS_Store
+*.swp
+*.swo
+.checkpoint
+
+# Docker
+*.log

@@ -1,0 +1,445 @@
+#!/usr/bin/env python3
+"""
+pdc — CLI para o sistema PDC-IA (PDC: Plataforma de Detecção de Capacidade para IA)
+
+Comandos:
+    detect              Detecta hardware do sistema
+    build <front|all>   Constrói containers Docker
+    up <front|all>      Sobe containers
+    down <front|all>    Para containers
+    status              Mostra status dos containers
+    benchmark <front>   Executa benchmark
+    results             Lista/mostra resultados
+    models list         Lista modelos disponíveis
+    models download     Baixa modelo específico
+"""
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+# Cores para output no terminal
+GREEN = "\033[32m"
+RED = "\033[31m"
+YELLOW = "\033[33m"
+BLUE = "\033[34m"
+BOLD = "\033[1m"
+RESET = "\033[0m"
+
+# Mapeamento de frentes para portas
+FRONTS = {
+    "vision": {"port": 8010, "compose": "vision/docker-compose.yml"},
+    "slm":    {"port": 8011, "compose": "slm/docker-compose.yml"},
+    "audio":  {"port": 8012, "compose": "audio/docker-compose.yml"},
+}
+
+# Diretório base do projeto (onde o script está)
+BASE_DIR = Path(__file__).parent.resolve()
+
+
+def ok(msg):
+    print(f"{GREEN}✓ {msg}{RESET}")
+
+
+def err(msg):
+    print(f"{RED}✗ {msg}{RESET}", file=sys.stderr)
+
+
+def info(msg):
+    print(f"{BLUE}→ {msg}{RESET}")
+
+
+def warn(msg):
+    print(f"{YELLOW}! {msg}{RESET}")
+
+
+def header(msg):
+    print(f"\n{BOLD}{msg}{RESET}")
+    print("─" * len(msg))
+
+
+# ─── cmd: detect ─────────────────────────────────────────────────────────────
+
+def cmd_detect(args):
+    """Detecta e exibe capacidades de hardware do sistema."""
+    sys.path.insert(0, str(BASE_DIR))
+    try:
+        from shared.capabilities import CapabilityDetector
+    except ImportError:
+        err("shared/capabilities.py não encontrado. Execute a partir do diretório ~/pdc-ia/")
+        sys.exit(1)
+
+    header("Detecção de Hardware")
+    caps = CapabilityDetector().detect()
+
+    cpu = caps.get("cpu", {})
+    ram = caps.get("ram", {})
+    gpu = caps.get("gpu", {})
+    storage = caps.get("storage", {})
+    temp = caps.get("temperature", {})
+    power = caps.get("power", {})
+
+    print(f"\n{BOLD}CPU{RESET}")
+    print(f"  Modelo:   {cpu.get('model', 'desconhecido')}")
+    print(f"  Arch:     {cpu.get('arch', '?')}")
+    print(f"  Cores:    {cpu.get('cores_physical', '?')} físicos / {cpu.get('cores_logical', '?')} lógicos")
+    print(f"  Freq:     {cpu.get('freq_mhz', '?')} MHz")
+    print(f"  Cache L3: {cpu.get('cache_kb', '?')} KB")
+    flags = cpu.get("flags", {})
+    active = [k for k, v in flags.items() if v]
+    print(f"  Flags IA: {', '.join(active) if active else 'nenhuma'}")
+
+    print(f"\n{BOLD}RAM{RESET}")
+    print(f"  Total:      {ram.get('total_gb', '?')} GB")
+    print(f"  Disponível: {ram.get('available_gb', '?')} GB")
+    print(f"  Tipo:       {ram.get('type', 'desconhecido')} @ {ram.get('speed_mhz', '?')} MHz")
+
+    print(f"\n{BOLD}GPU{RESET}")
+    if gpu.get("available"):
+        ok(f"  {gpu.get('model', 'desconhecida')}")
+        print(f"  VRAM:   {gpu.get('vram_mb', '?')} MB")
+        print(f"  CUDA:   {gpu.get('cuda_version', '?')}")
+        print(f"  CC:     {gpu.get('compute_capability', '?')}")
+    else:
+        warn("  GPU NVIDIA não detectada (CPU-only)")
+
+    print(f"\n{BOLD}Storage{RESET}")
+    print(f"  Tipo:        {storage.get('type', 'desconhecido')}")
+    print(f"  Dispositivo: {storage.get('device', '?')}")
+
+    if temp.get("cpu_avg_c"):
+        print(f"\n{BOLD}Temperatura{RESET}")
+        print(f"  CPU avg: {temp.get('cpu_avg_c')}°C  max: {temp.get('cpu_max_c')}°C")
+
+    if power.get("package_watts"):
+        print(f"\n{BOLD}Consumo de Energia{RESET}")
+        print(f"  Package: {power.get('package_watts')} W")
+        if power.get("dram_watts"):
+            print(f"  DRAM:    {power.get('dram_watts')} W")
+
+    if args.json:
+        print(f"\n{BOLD}JSON completo:{RESET}")
+        print(json.dumps(caps, indent=2))
+
+    if args.save:
+        out_file = BASE_DIR / "results" / "hardware_detect.json"
+        out_file.parent.mkdir(exist_ok=True)
+        with open(out_file, "w") as f:
+            json.dump(caps, f, indent=2)
+        ok(f"Salvo em {out_file}")
+
+
+# ─── cmd: build ──────────────────────────────────────────────────────────────
+
+def cmd_build(args):
+    """Constrói imagens Docker das frentes."""
+    fronts = list(FRONTS.keys()) if args.front == "all" else [args.front]
+    for front in fronts:
+        if front not in FRONTS:
+            err(f"Frente desconhecida: {front}. Use: {', '.join(FRONTS.keys())} ou all")
+            sys.exit(1)
+        compose_file = BASE_DIR / FRONTS[front]["compose"]
+        info(f"Building {front}...")
+        result = subprocess.run(
+            ["docker", "compose", "-f", str(compose_file), "build"],
+            cwd=BASE_DIR
+        )
+        if result.returncode == 0:
+            ok(f"{front} build OK")
+        else:
+            err(f"{front} build FALHOU")
+
+
+# ─── cmd: up ─────────────────────────────────────────────────────────────────
+
+def cmd_up(args):
+    """Sobe containers Docker."""
+    fronts = list(FRONTS.keys()) if args.front == "all" else [args.front]
+    for front in fronts:
+        if front not in FRONTS:
+            err(f"Frente desconhecida: {front}")
+            sys.exit(1)
+        compose_file = BASE_DIR / FRONTS[front]["compose"]
+        cmd = ["docker", "compose", "-f", str(compose_file), "up", "-d"]
+        info(f"Subindo {front}...")
+        result = subprocess.run(cmd, cwd=BASE_DIR)
+        if result.returncode == 0:
+            ok(f"{front} subiu")
+        else:
+            err(f"{front} falhou ao subir")
+
+
+# ─── cmd: down ───────────────────────────────────────────────────────────────
+
+def cmd_down(args):
+    """Para containers Docker."""
+    fronts = list(FRONTS.keys()) if args.front == "all" else [args.front]
+    for front in fronts:
+        if front not in FRONTS:
+            err(f"Frente desconhecida: {front}")
+            sys.exit(1)
+        compose_file = BASE_DIR / FRONTS[front]["compose"]
+        result = subprocess.run(
+            ["docker", "compose", "-f", str(compose_file), "down"],
+            cwd=BASE_DIR
+        )
+        if result.returncode == 0:
+            ok(f"{front} parado")
+
+
+# ─── cmd: status ─────────────────────────────────────────────────────────────
+
+def cmd_status(args):
+    """Exibe status de todos os containers PDC."""
+    import urllib.request
+    import urllib.error
+
+    header("Status dos Containers PDC")
+
+    all_ok = True
+    for front, cfg in FRONTS.items():
+        port = cfg["port"]
+        try:
+            with urllib.request.urlopen(f"http://localhost:{port}/health", timeout=3) as r:
+                data = json.loads(r.read())
+            status = data.get("status", "?")
+            model = data.get("model") or data.get("asr", "?")
+            device = data.get("device", "?")
+            gpu = "GPU" if data.get("gpu") else "CPU"
+            color = GREEN if status == "ok" else YELLOW
+            print(f"  {color}{front:8}{RESET}  :{port}  {status:8}  {model}  [{gpu}]")
+        except Exception:
+            print(f"  {RED}{front:8}{RESET}  :{port}  {RED}OFFLINE{RESET}")
+            all_ok = False
+
+    if all_ok:
+        print(f"\n{GREEN}Todos os containers estão rodando!{RESET}")
+    else:
+        print(f"\n{YELLOW}Alguns containers estão offline. Use './pdc up <front>' para subir.{RESET}")
+
+
+# ─── cmd: benchmark ──────────────────────────────────────────────────────────
+
+def cmd_benchmark(args):
+    """Executa benchmark em um ou todos os containers."""
+    import urllib.request
+    import urllib.error
+
+    fronts = list(FRONTS.keys()) if args.front == "all" else [args.front]
+    profile = "quick" if args.quick else getattr(args, "profile", "quick") or "quick"
+
+    for front in fronts:
+        if front not in FRONTS:
+            err(f"Frente desconhecida: {front}")
+            continue
+
+        port = FRONTS[front]["port"]
+        info(f"Benchmark {front} (perfil: {profile})...")
+
+        try:
+            payload = json.dumps({"profile": profile}).encode()
+            req = urllib.request.Request(
+                f"http://localhost:{port}/benchmark",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=600) as r:
+                result = json.loads(r.read())
+
+            bench = result.get("benchmark_results", {})
+            tp = bench.get("throughput", {})
+            lat = bench.get("latency", {})
+
+            ok(f"{front} benchmark completo!")
+            if tp.get("ops_per_sec"):
+                print(f"  Throughput: {tp['ops_per_sec']:.3f} ops/s")
+            if lat.get("p50_ms"):
+                print(f"  Latência p50: {lat['p50_ms']} ms  p99: {lat.get('p99_ms')} ms")
+
+            # Salva resultado local também
+            results_dir = BASE_DIR / "results"
+            results_dir.mkdir(exist_ok=True)
+            ts = time.strftime("%Y%m%d_%H%M%S")
+            out_file = results_dir / f"{front}_{profile}_{ts}.json"
+            with open(out_file, "w") as f:
+                json.dump(result, f, indent=2)
+            info(f"Salvo em {out_file}")
+
+        except Exception as e:
+            err(f"{front} benchmark falhou: {e}")
+
+
+# ─── cmd: results ─────────────────────────────────────────────────────────────
+
+def cmd_results(args):
+    """Lista e exibe resultados de benchmarks."""
+    results_dir = BASE_DIR / "results"
+    if not results_dir.exists():
+        warn("Nenhum resultado ainda. Execute './pdc benchmark <front>'")
+        return
+
+    json_files = sorted(results_dir.glob("*.json"), key=lambda f: f.stat().st_mtime, reverse=True)
+    if not json_files:
+        warn("Nenhum resultado encontrado em results/")
+        return
+
+    if args.latest:
+        # Mostra o arquivo mais recente
+        with open(json_files[0]) as f:
+            data = json.load(f)
+        print(json.dumps(data, indent=2))
+        return
+
+    header("Resultados de Benchmark")
+    for f in json_files[:20]:
+        size_kb = f.stat().st_size / 1024
+        mtime = time.strftime("%Y-%m-%d %H:%M", time.localtime(f.stat().st_mtime))
+        print(f"  {f.name:50}  {size_kb:6.1f} KB  {mtime}")
+
+
+# ─── cmd: models ──────────────────────────────────────────────────────────────
+
+def cmd_models(args):
+    """Gerencia modelos disponíveis."""
+    import yaml
+
+    config_file = BASE_DIR / "config" / "models.yaml"
+    if not config_file.exists():
+        err("config/models.yaml não encontrado")
+        sys.exit(1)
+
+    with open(config_file) as f:
+        models_cfg = yaml.safe_load(f)
+
+    if args.models_cmd == "list":
+        front_filter = getattr(args, "front_filter", None)
+        header("Modelos Disponíveis")
+        for front, cfg in models_cfg.items():
+            if front_filter and front != front_filter:
+                continue
+            print(f"\n{BOLD}{front.upper()}{RESET}")
+            if isinstance(cfg, dict) and "models" in cfg:
+                default = cfg.get("default", "")
+                for name, m in cfg.get("models", {}).items():
+                    tag = f" {GREEN}[default]{RESET}" if name == default else ""
+                    print(f"  {name}{tag}")
+                    print(f"    {m.get('description', '')}")
+                    print(f"    Tamanho: {m.get('size_mb', '?')} MB  GPU: {m.get('gpu_capable', False)}")
+            else:
+                # Estrutura aninhada (audio: asr/tts)
+                for sub, sub_cfg in cfg.items():
+                    if isinstance(sub_cfg, dict) and "models" in sub_cfg:
+                        print(f"  {BOLD}{sub}{RESET} (default: {sub_cfg.get('default', '?')})")
+                        for name, m in sub_cfg.get("models", {}).items():
+                            print(f"    {name}: {m.get('description', '')}")
+
+    elif args.models_cmd == "download":
+        front = args.front_filter
+        model_name = args.model_name
+        sys.path.insert(0, str(BASE_DIR))
+        from shared.model_loader import get_or_download
+
+        # Encontra config do modelo
+        front_cfg = models_cfg.get(front, {})
+        model_cfg = None
+        if "models" in front_cfg:
+            model_cfg = front_cfg["models"].get(model_name)
+        else:
+            # Estrutura aninhada (audio)
+            for sub, sub_cfg in front_cfg.items():
+                if isinstance(sub_cfg, dict) and model_name in sub_cfg.get("models", {}):
+                    model_cfg = sub_cfg["models"][model_name]
+
+        if not model_cfg:
+            err(f"Modelo '{model_name}' não encontrado para '{front}'")
+            sys.exit(1)
+
+        info(f"Baixando {model_name}...")
+        try:
+            path = get_or_download(model_cfg, cache_dir=str(BASE_DIR / "data" / "models"))
+            ok(f"Modelo salvo em: {path}")
+        except Exception as e:
+            err(f"Download falhou: {e}")
+
+
+# ─── Parser principal ──────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="pdc",
+        description="PDC-IA — CLI para benchmark de hardware com modelos de IA",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sub = parser.add_subparsers(dest="command")
+
+    # detect
+    p_detect = sub.add_parser("detect", help="Detecta hardware do sistema")
+    p_detect.add_argument("--json", action="store_true", help="Exibe saída em JSON")
+    p_detect.add_argument("--save", action="store_true", help="Salva resultado em results/")
+
+    # build
+    p_build = sub.add_parser("build", help="Constrói containers")
+    p_build.add_argument("front", help="Nome da frente (vision|slm|audio|all)")
+
+    # up
+    p_up = sub.add_parser("up", help="Sobe containers")
+    p_up.add_argument("front", help="Nome da frente ou 'all'")
+    p_up.add_argument("--gpu", action="store_true", help="Força uso de GPU")
+    p_up.add_argument("--cpu", action="store_true", help="Força uso de CPU")
+
+    # down
+    p_down = sub.add_parser("down", help="Para containers")
+    p_down.add_argument("front", help="Nome da frente ou 'all'")
+
+    # status
+    sub.add_parser("status", help="Status dos containers")
+
+    # benchmark
+    p_bench = sub.add_parser("benchmark", help="Executa benchmark")
+    p_bench.add_argument("front", help="Nome da frente ou 'all'")
+    p_bench.add_argument("--quick", action="store_true", help="Perfil rápido (30s)")
+    p_bench.add_argument("--profile", help="Perfil: quick|standard|full")
+
+    # results
+    p_res = sub.add_parser("results", help="Lista resultados")
+    p_res.add_argument("--latest", action="store_true", help="Mostra resultado mais recente")
+    p_res.add_argument("--compare", nargs=2, metavar=("F1", "F2"), help="Compara dois arquivos")
+
+    # models
+    p_models = sub.add_parser("models", help="Gerencia modelos")
+    models_sub = p_models.add_subparsers(dest="models_cmd")
+    p_models_list = models_sub.add_parser("list", help="Lista modelos")
+    p_models_list.add_argument("front_filter", nargs="?", help="Filtra por frente")
+    p_models_dl = models_sub.add_parser("download", help="Baixa modelo")
+    p_models_dl.add_argument("front_filter", metavar="front")
+    p_models_dl.add_argument("model_name", metavar="model")
+
+    args = parser.parse_args()
+
+    if args.command == "detect":
+        cmd_detect(args)
+    elif args.command == "build":
+        cmd_build(args)
+    elif args.command == "up":
+        cmd_up(args)
+    elif args.command == "down":
+        cmd_down(args)
+    elif args.command == "status":
+        cmd_status(args)
+    elif args.command == "benchmark":
+        cmd_benchmark(args)
+    elif args.command == "results":
+        cmd_results(args)
+    elif args.command == "models":
+        cmd_models(args)
+    else:
+        parser.print_help()
+
+
+if __name__ == "__main__":
+    main()
