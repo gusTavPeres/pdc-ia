@@ -1,0 +1,53 @@
+vision:
+  default: "synthetic_10"
+  datasets:
+    synthetic_10:
+      type: "object_detection"
+      source: "generate"
+      samples: 10
+      metrics: ["fps", "latency_ms"]
+
+slm:
+  default: "prompts_pt_20"
+  datasets:
+    prompts_pt_20:
+      type: "text_generation"
+      source: "inline"
+      max_tokens: 150
+      prompts:
+        - "Explique o que é inteligência artificial em 3 frases."
+        - "Qual a diferença entre machine learning e deep learning?"
+        - "Escreva um parágrafo sobre energia solar."
+        - "O que é um microcontrolador?"
+        - "Descreva como funciona um motor elétrico."
+        - "O que são embeddings em IA?"
+        - "Explique o conceito de edge computing."
+        - "O que é quantização de modelos?"
+        - "Descreva o protocolo MQTT."
+        - "O que é visão computacional?"
+        - "Explique transferência de aprendizado."
+        - "O que é um tensor?"
+        - "Descreva o que é inferência em IA."
+        - "O que é TinyML?"
+        - "Explique o conceito de latência em sistemas."
+        - "O que é um sistema embarcado?"
+        - "Descreva como funciona speech-to-text."
+        - "O que é ONNX e para que serve?"
+        - "Explique o conceito de throughput."
+        - "O que é uma rede neural convolucional?"
+      metrics: ["tokens_per_sec", "time_to_first_token_ms"]
+
+audio:
+  asr:
+    default: "self_generated"
+    datasets:
+      self_generated:
+        type: "asr"
+        source: "self_generate"
+        phrases:
+          - "Teste de reconhecimento de voz"
+          - "O projeto avalia hardware para inteligência artificial"
+          - "Inferência em borda com modelos pequenos"
+          - "Detecção de objetos em tempo real"
+          - "Processamento de linguagem natural"
+        metrics: ["wer", "rtf", "latency_ms"]

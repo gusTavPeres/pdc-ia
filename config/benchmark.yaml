@@ -1,0 +1,31 @@
+profiles:
+  express:
+    throughput: { duration_sec: 10, warmup: 2 }
+    latency: { samples: 10, percentiles: [50, 95, 99] }
+    resource_usage: { duration_sec: 10, interval_sec: 1 }
+    sustained_load: { duration_min: 0 }
+    memory_bandwidth: { enabled: false }
+  quick:
+    throughput: { duration_sec: 15, warmup: 3 }
+    latency: { samples: 15, percentiles: [50, 95, 99] }
+    resource_usage: { duration_sec: 15, interval_sec: 1 }
+    sustained_load: { duration_min: 0 }
+    memory_bandwidth: { enabled: false }
+  standard:
+    throughput: { duration_sec: 45, warmup: 5 }
+    latency: { samples: 40, percentiles: [50, 95, 99] }
+    resource_usage: { duration_sec: 45, interval_sec: 1 }
+    sustained_load: { duration_min: 2 }
+    memory_bandwidth: { enabled: true, patterns: ["sequential","random"], block_sizes_kb: [4,64,1024,16384] }
+  extended:
+    throughput: { duration_sec: 120, warmup: 10 }
+    latency: { samples: 200, percentiles: [50,90,95,99,99.9] }
+    resource_usage: { duration_sec: 120, interval_sec: 1 }
+    sustained_load: { duration_min: 10 }
+    memory_bandwidth: { enabled: true, patterns: ["sequential","random"], block_sizes_kb: [4,16,64,256,1024,4096,16384] }
+default_profile: "quick"
+output:
+  format: "json"
+  path: "/app/results/"
+  include_system_info: true
+  timestamp: true

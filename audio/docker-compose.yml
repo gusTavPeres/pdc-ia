@@ -1,0 +1,28 @@
+services:
+  pdc-audio:
+    build:
+      context: ..
+      dockerfile: audio/Dockerfile
+    container_name: pdc-audio
+    ports:
+      - "8012:8000"
+    volumes:
+      - ../config:/app/config:ro
+      - ../data:/app/data
+      - ../results:/app/results
+      - ../shared:/app/shared:ro
+      - /sys:/sys:ro
+    environment:
+      - PDC_FRONT=audio
+      - PDC_GPU_MODE=auto
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    shm_size: "256m"
+    restart: unless-stopped
