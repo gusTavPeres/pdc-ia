@@ -1,8 +1,4 @@
-"""
-test_vision.py — Teste de integração do container de visão.
-
-Gera imagem aleatória, envia para /predict e verifica resposta 200.
-"""
+"""Teste de integração do container de visão."""
 
 import io
 import sys
@@ -31,49 +27,35 @@ def wait_for_health(max_wait=300):
 
 
 def test_health():
-    """Testa endpoint /health."""
     r = requests.get(f"{BASE_URL}/health", timeout=10)
     assert r.status_code == 200, f"Health retornou {r.status_code}"
     data = r.json()
     assert "status" in data
     print(f"  Health: {data}")
-    return True
 
 
 def test_predict():
-    """Testa detecção de objetos com imagem sintética."""
-    # Gera imagem JPEG 640x640 em memória
     try:
         import cv2
         img = np.random.randint(0, 255, (640, 640, 3), dtype=np.uint8)
         _, encoded = cv2.imencode(".jpg", img)
         image_bytes = encoded.tobytes()
     except ImportError:
-        # Sem cv2: cria imagem JPEG mínima válida
-        # JPEG header mínimo (imagem 1x1 branca)
-        image_bytes = (
-            b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00'
-            b'\xff\xdb\x00C\x00\x08\x06\x06\x07\x06\x05\x08\x07\x07\x07\t\t'
-            b'\x08\n\x0c\x14\r\x0c\x0b\x0b\x0c\x19\x12\x13\x0f\x14\x1d\x1a'
-            b'\x1f\x1e\x1d\x1a\x1c\x1c $.\' ",#\x1c\x1c(7),01444\x1f\'9=82<.342\x1e\xbb\x00\x0b'
-        )
+        image_bytes = b"P6\n1 1\n255\n\xff\xff\xff"
 
-    files = {"file": ("test.jpg", image_bytes, "image/jpeg")}
+    files = {"file": ("test.ppm", image_bytes, "image/x-portable-pixmap")}
     r = requests.post(f"{BASE_URL}/predict", files=files, timeout=30)
     assert r.status_code == 200, f"Predict retornou {r.status_code}: {r.text}"
     data = r.json()
     assert "detections" in data, "Resposta não contém 'detections'"
     assert "count" in data
     print(f"  Predict OK: {data['count']} detecções, device={data.get('device')}")
-    return True
 
 
 def test_info():
-    """Testa endpoint /info."""
     r = requests.get(f"{BASE_URL}/info", timeout=10)
     assert r.status_code == 200, f"Info retornou {r.status_code}"
     print(f"  Info OK: model={r.json().get('model', {}).get('name')}")
-    return True
 
 
 if __name__ == "__main__":

@@ -1,0 +1,22 @@
+profile:
+  id: local-rtx-a2000
+  description: Bancada local x86_64 com NVIDIA RTX A2000
+cost_model:
+  currency: BRL
+  hardware_price: 7000.0
+  electricity_per_kwh: 1.17
+  amortization_hours: 8760.0
+measurement:
+  power_source: gpu_nvml
+  notes:
+  - GPU via NVML/nvidia-smi quando disponível.
+  - CPU package power depende de RAPL/powercap ou medidor externo.
+score_references:
+  vision:
+    ops_per_sec: 30.0
+  slm:
+    tokens_per_sec: 20.0
+    ops_per_sec: 2.0
+  audio:
+    ops_per_sec: 2.0
+    audio_realtime_factor_inverse: 1.0

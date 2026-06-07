@@ -1,18 +1,5 @@
 #!/usr/bin/env python3
-"""
-pdc — CLI para o sistema PDC-IA (PDC: Plataforma de Detecção de Capacidade para IA)
-
-Comandos:
-    detect              Detecta hardware do sistema
-    build <front|all>   Constrói containers Docker
-    up <front|all>      Sobe containers
-    down <front|all>    Para containers
-    status              Mostra status dos containers
-    benchmark <front>   Executa benchmark
-    results             Lista/mostra resultados
-    models list         Lista modelos disponíveis
-    models download     Baixa modelo específico
-"""
+"""CLI do benchmark de hardware."""
 
 import argparse
 import json
@@ -22,7 +9,6 @@ import sys
 import time
 from pathlib import Path
 
-# Cores para output no terminal
 GREEN = "\033[32m"
 RED = "\033[31m"
 YELLOW = "\033[33m"
@@ -30,14 +16,12 @@ BLUE = "\033[34m"
 BOLD = "\033[1m"
 RESET = "\033[0m"
 
-# Mapeamento de frentes para portas
 FRONTS = {
     "vision": {"port": 8010, "compose": "vision/docker-compose.yml"},
     "slm":    {"port": 8011, "compose": "slm/docker-compose.yml"},
     "audio":  {"port": 8012, "compose": "audio/docker-compose.yml"},
 }
 
-# Diretório base do projeto (onde o script está)
 BASE_DIR = Path(__file__).parent.resolve()
 
 
@@ -62,7 +46,27 @@ def header(msg):
     print("─" * len(msg))
 
 
-# ─── cmd: detect ─────────────────────────────────────────────────────────────
+def _has_nvidia_gpu():
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "-L"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=3,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def _compose_cmd(front, gpu_enabled=False):
+    compose_file = BASE_DIR / FRONTS[front]["compose"]
+    cmd = ["docker", "compose", "-f", str(compose_file)]
+    gpu_file = compose_file.with_name("docker-compose.gpu.yml")
+    if gpu_enabled and gpu_file.exists():
+        cmd.extend(["-f", str(gpu_file)])
+    return cmd
+
 
 def cmd_detect(args):
     """Detecta e exibe capacidades de hardware do sistema."""
@@ -133,8 +137,6 @@ def cmd_detect(args):
         ok(f"Salvo em {out_file}")
 
 
-# ─── cmd: build ──────────────────────────────────────────────────────────────
-
 def cmd_build(args):
     """Constrói imagens Docker das frentes."""
     fronts = list(FRONTS.keys()) if args.front == "all" else [args.front]
@@ -142,10 +144,9 @@ def cmd_build(args):
         if front not in FRONTS:
             err(f"Frente desconhecida: {front}. Use: {', '.join(FRONTS.keys())} ou all")
             sys.exit(1)
-        compose_file = BASE_DIR / FRONTS[front]["compose"]
         info(f"Building {front}...")
         result = subprocess.run(
-            ["docker", "compose", "-f", str(compose_file), "build"],
+            _compose_cmd(front) + ["build"],
             cwd=BASE_DIR
         )
         if result.returncode == 0:
@@ -154,26 +155,27 @@ def cmd_build(args):
             err(f"{front} build FALHOU")
 
 
-# ─── cmd: up ─────────────────────────────────────────────────────────────────
-
 def cmd_up(args):
     """Sobe containers Docker."""
     fronts = list(FRONTS.keys()) if args.front == "all" else [args.front]
+    if args.cpu and args.gpu:
+        err("Use apenas um modo: --cpu ou --gpu")
+        sys.exit(1)
+    gpu_enabled = args.gpu or (not args.cpu and _has_nvidia_gpu())
+    env = os.environ.copy()
+    env["PDC_GPU_MODE"] = "auto" if gpu_enabled else "cpu"
     for front in fronts:
         if front not in FRONTS:
             err(f"Frente desconhecida: {front}")
             sys.exit(1)
-        compose_file = BASE_DIR / FRONTS[front]["compose"]
-        cmd = ["docker", "compose", "-f", str(compose_file), "up", "-d"]
-        info(f"Subindo {front}...")
-        result = subprocess.run(cmd, cwd=BASE_DIR)
+        cmd = _compose_cmd(front, gpu_enabled=gpu_enabled) + ["up", "-d"]
+        info(f"Subindo {front} ({'GPU' if gpu_enabled else 'CPU'})...")
+        result = subprocess.run(cmd, cwd=BASE_DIR, env=env)
         if result.returncode == 0:
             ok(f"{front} subiu")
         else:
             err(f"{front} falhou ao subir")
 
-
-# ─── cmd: down ───────────────────────────────────────────────────────────────
 
 def cmd_down(args):
     """Para containers Docker."""
@@ -182,16 +184,13 @@ def cmd_down(args):
         if front not in FRONTS:
             err(f"Frente desconhecida: {front}")
             sys.exit(1)
-        compose_file = BASE_DIR / FRONTS[front]["compose"]
         result = subprocess.run(
-            ["docker", "compose", "-f", str(compose_file), "down"],
+            _compose_cmd(front) + ["down"],
             cwd=BASE_DIR
         )
         if result.returncode == 0:
             ok(f"{front} parado")
 
-
-# ─── cmd: status ─────────────────────────────────────────────────────────────
 
 def cmd_status(args):
     """Exibe status de todos os containers PDC."""
@@ -221,8 +220,6 @@ def cmd_status(args):
     else:
         print(f"\n{YELLOW}Alguns containers estão offline. Use './pdc up <front>' para subir.{RESET}")
 
-
-# ─── cmd: benchmark ──────────────────────────────────────────────────────────
 
 def cmd_benchmark(args):
     """Executa benchmark em um ou todos os containers."""
@@ -260,21 +257,21 @@ def cmd_benchmark(args):
                 print(f"  Throughput: {tp['ops_per_sec']:.3f} ops/s")
             if lat.get("p50_ms"):
                 print(f"  Latência p50: {lat['p50_ms']} ms  p99: {lat.get('p99_ms')} ms")
+            scorecard = result.get("scorecard", {})
+            primary = scorecard.get("primary_metric", {})
+            if primary.get("value") is not None:
+                print(f"  Métrica primária: {primary['value']:.3f} {primary.get('unit', '')}")
+            if scorecard.get("performance_score") is not None:
+                print(f"  Score: {scorecard['performance_score']:.1f}")
+            eff = scorecard.get("efficiency", {})
+            if eff.get("energy_per_op_j") is not None:
+                print(f"  Energia/op: {eff['energy_per_op_j']:.6f} J")
 
-            # Salva resultado local também
-            results_dir = BASE_DIR / "results"
-            results_dir.mkdir(exist_ok=True)
-            ts = time.strftime("%Y%m%d_%H%M%S")
-            out_file = results_dir / f"{front}_{profile}_{ts}.json"
-            with open(out_file, "w") as f:
-                json.dump(result, f, indent=2)
-            info(f"Salvo em {out_file}")
+            info("Resultado salvo pelo container em results/")
 
         except Exception as e:
             err(f"{front} benchmark falhou: {e}")
 
-
-# ─── cmd: results ─────────────────────────────────────────────────────────────
 
 def cmd_results(args):
     """Lista e exibe resultados de benchmarks."""
@@ -286,6 +283,32 @@ def cmd_results(args):
     json_files = sorted(results_dir.glob("*.json"), key=lambda f: f.stat().st_mtime, reverse=True)
     if not json_files:
         warn("Nenhum resultado encontrado em results/")
+        return
+
+    if getattr(args, "scorecard", False):
+        header("Scorecards")
+        sys.path.insert(0, str(BASE_DIR))
+        try:
+            from shared.scorecard import compute_scorecard, load_hardware_config
+            hw_cfg = load_hardware_config(str(BASE_DIR / "config" / "hardware.yaml"))
+        except Exception:
+            compute_scorecard = None
+            hw_cfg = {}
+        for f in json_files[:20]:
+            with open(f) as fp:
+                data = json.load(fp)
+            sc = data.get("scorecard", {})
+            if not sc and compute_scorecard:
+                sc = compute_scorecard(data, hw_cfg)
+            primary = sc.get("primary_metric", {})
+            score = sc.get("performance_score")
+            eff = sc.get("efficiency", {})
+            cost = sc.get("cost", {})
+            metric = "—"
+            if primary.get("value") is not None:
+                metric = f"{primary['value']:.3f} {primary.get('unit', '')}"
+            print(f"  {f.name:45}  score={score if score is not None else '—'}  metric={metric}  "
+                  f"J/op={eff.get('energy_per_op_j', '—')}  cost/1k={cost.get('cost_per_1k_primary_units', '—')}")
         return
 
     if args.latest:
@@ -302,8 +325,6 @@ def cmd_results(args):
         print(f"  {f.name:50}  {size_kb:6.1f} KB  {mtime}")
 
 
-# ─── cmd: models ──────────────────────────────────────────────────────────────
-
 def cmd_models(args):
     """Gerencia modelos disponíveis."""
     import yaml
@@ -319,55 +340,95 @@ def cmd_models(args):
     if args.models_cmd == "list":
         front_filter = getattr(args, "front_filter", None)
         header("Modelos Disponíveis")
-        for front, cfg in models_cfg.items():
-            if front_filter and front != front_filter:
+        grouped = {}
+        for front, name, model_cfg, is_default in _iter_models(models_cfg):
+            if front_filter and front_filter not in (front, front.split("_")[0]):
                 continue
+            grouped.setdefault(front, []).append((name, model_cfg, is_default))
+        for front, rows in grouped.items():
             print(f"\n{BOLD}{front.upper()}{RESET}")
-            if isinstance(cfg, dict) and "models" in cfg:
-                default = cfg.get("default", "")
-                for name, m in cfg.get("models", {}).items():
-                    tag = f" {GREEN}[default]{RESET}" if name == default else ""
-                    print(f"  {name}{tag}")
-                    print(f"    {m.get('description', '')}")
-                    print(f"    Tamanho: {m.get('size_mb', '?')} MB  GPU: {m.get('gpu_capable', False)}")
-            else:
-                # Estrutura aninhada (audio: asr/tts)
-                for sub, sub_cfg in cfg.items():
-                    if isinstance(sub_cfg, dict) and "models" in sub_cfg:
-                        print(f"  {BOLD}{sub}{RESET} (default: {sub_cfg.get('default', '?')})")
-                        for name, m in sub_cfg.get("models", {}).items():
-                            print(f"    {name}: {m.get('description', '')}")
+            for name, model_cfg, is_default in rows:
+                tag = f" {GREEN}[default]{RESET}" if is_default else ""
+                print(f"  {name}{tag}")
+                print(f"    {model_cfg.get('description', '')}")
+                print(f"    Tamanho: {model_cfg.get('size_mb', '?')} MB  GPU: {model_cfg.get('gpu_capable', False)}")
 
     elif args.models_cmd == "download":
-        front = args.front_filter
-        model_name = args.model_name
         sys.path.insert(0, str(BASE_DIR))
         from shared.model_loader import get_or_download
 
-        # Encontra config do modelo
-        front_cfg = models_cfg.get(front, {})
-        model_cfg = None
-        if "models" in front_cfg:
-            model_cfg = front_cfg["models"].get(model_name)
-        else:
-            # Estrutura aninhada (audio)
-            for sub, sub_cfg in front_cfg.items():
-                if isinstance(sub_cfg, dict) and model_name in sub_cfg.get("models", {}):
-                    model_cfg = sub_cfg["models"][model_name]
-
-        if not model_cfg:
-            err(f"Modelo '{model_name}' não encontrado para '{front}'")
+        front = args.front_filter
+        model_name = args.model_name
+        targets = _resolve_model_targets(models_cfg, front, model_name, defaults=args.defaults)
+        if not targets:
+            err("Nenhum modelo encontrado para download")
             sys.exit(1)
 
-        info(f"Baixando {model_name}...")
-        try:
-            path = get_or_download(model_cfg, cache_dir=str(BASE_DIR / "data" / "models"))
-            ok(f"Modelo salvo em: {path}")
-        except Exception as e:
-            err(f"Download falhou: {e}")
+        cache_dir = str(BASE_DIR / "data" / "models")
+        failures = 0
+        for label, model_cfg in targets:
+            urls = _model_download_items(model_cfg)
+            if not urls:
+                warn(f"{label}: sem URL direta. O runtime fará o download no primeiro carregamento.")
+                continue
+            for item in urls:
+                info(f"Baixando {label}: {item.get('filename') or item.get('url', '').split('/')[-1]}")
+                try:
+                    path = get_or_download(item, cache_dir=cache_dir)
+                    ok(f"Salvo em: {path}")
+                except Exception as e:
+                    failures += 1
+                    err(f"{label}: download falhou: {e}")
+        if failures:
+            sys.exit(1)
 
 
-# ─── Parser principal ──────────────────────────────────────────────────────────
+def _iter_models(models_cfg):
+    for front, cfg in models_cfg.items():
+        if isinstance(cfg, dict) and "models" in cfg:
+            default = cfg.get("default", "")
+            for name, model_cfg in cfg.get("models", {}).items():
+                yield front, name, model_cfg, name == default
+            continue
+        if isinstance(cfg, dict):
+            for sub, sub_cfg in cfg.items():
+                if isinstance(sub_cfg, dict) and "models" in sub_cfg:
+                    default = sub_cfg.get("default", "")
+                    label_front = f"{front}_{sub}" if front == "audio" else sub
+                    for name, model_cfg in sub_cfg.get("models", {}).items():
+                        yield label_front, name, model_cfg, name == default
+
+
+def _resolve_model_targets(models_cfg, front, model_name, defaults=False):
+    rows = list(_iter_models(models_cfg))
+    if front in ("all", "*"):
+        selected = rows
+    elif front in ("defaults", "default"):
+        selected = [row for row in rows if row[3]]
+    else:
+        selected = [row for row in rows if row[0] == front]
+        if model_name:
+            selected = [row for row in selected if row[1] == model_name]
+        elif not defaults:
+            selected = [row for row in selected if row[3]]
+
+    if defaults:
+        selected = [row for row in selected if row[3]]
+    return [(f"{front}/{name}", cfg) for front, name, cfg, _default in selected]
+
+
+def _model_download_items(model_cfg):
+    items = []
+    for key in ("config_url", "url", "model_url"):
+        url = model_cfg.get(key)
+        if not url:
+            continue
+        filename = model_cfg.get("filename") if key in ("url", "model_url") else None
+        if not filename:
+            filename = url.split("/")[-1].split("?")[0]
+        items.append({"url": url, "filename": filename})
+    return items
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -403,11 +464,12 @@ def main():
     p_bench = sub.add_parser("benchmark", help="Executa benchmark")
     p_bench.add_argument("front", help="Nome da frente ou 'all'")
     p_bench.add_argument("--quick", action="store_true", help="Perfil rápido (30s)")
-    p_bench.add_argument("--profile", help="Perfil: quick|standard|full")
+    p_bench.add_argument("--profile", help="Perfil: express|quick|standard|extended")
 
     # results
     p_res = sub.add_parser("results", help="Lista resultados")
     p_res.add_argument("--latest", action="store_true", help="Mostra resultado mais recente")
+    p_res.add_argument("--scorecard", action="store_true", help="Lista scorecards dos resultados")
     p_res.add_argument("--compare", nargs=2, metavar=("F1", "F2"), help="Compara dois arquivos")
 
     # models
@@ -415,9 +477,21 @@ def main():
     models_sub = p_models.add_subparsers(dest="models_cmd")
     p_models_list = models_sub.add_parser("list", help="Lista modelos")
     p_models_list.add_argument("front_filter", nargs="?", help="Filtra por frente")
-    p_models_dl = models_sub.add_parser("download", help="Baixa modelo")
-    p_models_dl.add_argument("front_filter", metavar="front")
-    p_models_dl.add_argument("model_name", metavar="model")
+    p_models_dl = models_sub.add_parser(
+        "download",
+        help="Baixa modelos configurados",
+        description=(
+            "Exemplos:\n"
+            "  ./pdc models download defaults\n"
+            "  ./pdc models download all\n"
+            "  ./pdc models download slm tinyllama-1.1b-q4\n"
+            "  ./pdc models download audio_tts --defaults"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_models_dl.add_argument("front_filter", metavar="front", help="vision|slm|audio_asr|audio_tts|defaults|all")
+    p_models_dl.add_argument("model_name", nargs="?", metavar="model")
+    p_models_dl.add_argument("--defaults", action="store_true", help="Baixa apenas modelos padrão")
 
     args = parser.parse_args()
 

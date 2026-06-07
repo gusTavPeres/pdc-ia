@@ -14,15 +14,6 @@ services:
       - /sys:/sys:ro
     environment:
       - PDC_FRONT=audio
-      - PDC_GPU_MODE=auto
-      - NVIDIA_VISIBLE_DEVICES=all
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+      - PDC_GPU_MODE=${PDC_GPU_MODE:-auto}
     shm_size: "256m"
     restart: unless-stopped

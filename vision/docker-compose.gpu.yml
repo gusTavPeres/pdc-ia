@@ -1,0 +1,7 @@
+services:
+  pdc-vision:
+    gpus: all
+    environment:
+      - PDC_GPU_MODE=auto
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility

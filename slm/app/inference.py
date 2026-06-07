@@ -46,6 +46,12 @@ def _build_prompt(user_text: str, chat_format: str) -> str:
             f"<|im_start|>user\n{user_text}<|im_end|>\n"
             "<|im_start|>assistant\n"
         )
+    elif chat_format == "gemma3":
+        # Formato Gemma 3: <start_of_turn>role\ncontent<end_of_turn>
+        return (
+            f"<start_of_turn>user\n{user_text}<end_of_turn>\n"
+            "<start_of_turn>model\n"
+        )
     else:
         # Formato TinyLlama
         return (
@@ -59,6 +65,8 @@ def _stop_tokens(chat_format: str) -> list:
     """Retorna tokens de parada para o formato do modelo."""
     if chat_format == "chatml":
         return ["<|im_end|>", "<|im_start|>"]
+    elif chat_format == "gemma3":
+        return ["<end_of_turn>", "<eos>"]
     else:
         return ["</s>", "<|user|>", "<|system|>"]
 

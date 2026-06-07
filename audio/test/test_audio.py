@@ -1,6 +1,4 @@
-"""
-test_audio.py — Teste de integração do container de áudio.
-"""
+"""Teste de integração do container de áudio."""
 
 import sys
 import time
@@ -33,8 +31,7 @@ def test_health():
     print(f"  Health: {data}")
 
 
-def test_tts():
-    """Testa síntese de voz."""
+def request_tts_audio():
     payload = {"text": "Teste de síntese de voz em português."}
     r = requests.post(f"{BASE_URL}/tts", json=payload, timeout=30)
     assert r.status_code == 200, f"TTS retornou {r.status_code}: {r.text}"
@@ -43,19 +40,14 @@ def test_tts():
     return r.content
 
 
+def test_tts():
+    request_tts_audio()
+
+
 def test_asr(wav_bytes=None):
     """Testa transcrição de áudio."""
     if wav_bytes is None:
-        # Gera WAV mínimo de silêncio para teste
-        import io, wave, struct
-        audio_io = io.BytesIO()
-        with wave.open(audio_io, "wb") as w:
-            w.setnchannels(1)
-            w.setsampwidth(2)
-            w.setframerate(16000)
-            samples = [0] * 32000  # 2 segundos de silêncio
-            w.writeframes(struct.pack(f"<{len(samples)}h", *samples))
-        wav_bytes = audio_io.getvalue()
+        wav_bytes = request_tts_audio()
 
     files = {"file": ("audio.wav", wav_bytes, "audio/wav")}
     r = requests.post(f"{BASE_URL}/asr", files=files, timeout=60)
@@ -88,7 +80,7 @@ if __name__ == "__main__":
     # TTS primeiro para ter áudio para o ASR
     try:
         print("\nTestando test_tts...")
-        wav_bytes = test_tts()
+        wav_bytes = request_tts_audio()
         print("  PASSOU")
         passed += 1
     except Exception as e:

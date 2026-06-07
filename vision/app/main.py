@@ -38,12 +38,26 @@ class BenchmarkRequest(BaseModel):
     profile: str = "quick"
 
 
+class SwitchModelRequest(BaseModel):
+    """Parâmetros para trocar o modelo em runtime."""
+    model: str
+
+
 # ─── Variáveis globais ────────────────────────────────────────────────────────
 
 _capabilities = {}
 _models_config = {}
 _benchmark_config = {}
 _last_benchmark_result = None
+
+
+def _reload_runtime_config():
+    global _models_config, _benchmark_config
+
+    with open("/app/config/models.yaml") as f:
+        _models_config = yaml.safe_load(f) or {}
+    with open("/app/config/benchmark.yaml") as f:
+        _benchmark_config = yaml.safe_load(f) or {}
 
 
 # ─── Startup/Shutdown ─────────────────────────────────────────────────────────
@@ -67,10 +81,7 @@ async def lifespan(app: FastAPI):
 
     # Lê configurações
     try:
-        with open("/app/config/models.yaml") as f:
-            _models_config = yaml.safe_load(f)
-        with open("/app/config/benchmark.yaml") as f:
-            _benchmark_config = yaml.safe_load(f)
+        _reload_runtime_config()
     except Exception as e:
         print(f"[vision] Aviso: erro ao ler config: {e}")
         _models_config = {}
@@ -136,6 +147,10 @@ async def info():
     """
     Retorna informações detalhadas sobre o modelo e o hardware.
     """
+    try:
+        _reload_runtime_config()
+    except Exception:
+        pass
     return {
         "model": {
             "name": get_model_name(),
@@ -143,8 +158,40 @@ async def info():
             "gpu": get_device() == "cuda",
             "type": "object_detection",
         },
+        "available_models": list(_models_config.get("vision", {}).get("models", {}).keys()),
         "system": _capabilities,
     }
+
+
+@app.post("/switch-model")
+async def switch_model(request: SwitchModelRequest):
+    try:
+        _reload_runtime_config()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Falha ao recarregar config: {e}")
+
+    vision_cfg = _models_config.get("vision", {})
+    model_cfg = vision_cfg.get("models", {}).get(request.model)
+
+    if not model_cfg:
+        available = list(vision_cfg.get("models", {}).keys())
+        raise HTTPException(
+            status_code=404,
+            detail=f"Modelo '{request.model}' não encontrado. Disponíveis: {available}"
+        )
+
+    try:
+        load_model(model_cfg)
+        return {
+            "status": "ok",
+            "loaded": {
+                "name": get_model_name(),
+                "device": get_device(),
+                "gpu": get_device() == "cuda",
+            },
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/predict")
@@ -190,6 +237,11 @@ async def benchmark_endpoint(request: BenchmarkRequest):
     """
     global _last_benchmark_result
 
+    try:
+        _reload_runtime_config()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Falha ao recarregar config: {e}")
+
     profile_name = request.profile
     profiles = _benchmark_config.get("profiles", {})
     profile = profiles.get(profile_name, profiles.get("quick", {}))
@@ -200,9 +252,23 @@ async def benchmark_endpoint(request: BenchmarkRequest):
     try:
         benchmark_fn = get_benchmark_fn()
         loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, partial(run_full_benchmark, benchmark_fn, profile, _capabilities))
+        dataset_name = _models_config.get("vision", {}).get("dataset") or "synthetic_640_random"
+        result = await loop.run_in_executor(
+            None,
+            partial(
+                run_full_benchmark,
+                benchmark_fn,
+                profile,
+                _capabilities,
+                profile_name=profile_name,
+                front="vision",
+                model=get_model_name(),
+                dataset=dataset_name,
+            ),
+        )
         result["profile"] = profile_name
         result["front"] = "vision"
+        result["model"] = get_model_name()
 
         # Salva resultado em arquivo
         os.makedirs("/app/results", exist_ok=True)

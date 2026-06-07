@@ -1,0 +1,1690 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Hardware Tester AI</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+:root{--bg:#101010;--card:#171717;--card2:#202020;--border:#303030;--accent:#0f766e;--accent2:#14b8a6;
+  --green:#22c55e;--red:#ef4444;--yellow:#f59e0b;--blue:#2563eb;--cyan:#0891b2;
+  --text:#e7e7e7;--sub:#a3a3a3;--dim:#737373;--radius:8px}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:'Inter','Segoe UI',system-ui,sans-serif;overflow-x:hidden}
+a{color:var(--accent2);text-decoration:none}
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:var(--bg)}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+
+/* Layout */
+.header{padding:16px 24px;display:flex;align-items:center;gap:16px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--bg);z-index:100}
+.header h1{font-size:1.2rem;font-weight:700;color:var(--text)}
+.header .tag{font-size:.7rem;padding:2px 8px;border-radius:8px;background:var(--accent);color:#fff;font-weight:600}
+.header .spacer{flex:1}
+.header .clock{font-size:.8rem;color:var(--sub);font-variant-numeric:tabular-nums}
+
+.tabs{display:flex;gap:0;border-bottom:1px solid var(--border);padding:0 24px;background:var(--card)}
+.tab{padding:10px 20px;font-size:.85rem;color:var(--sub);cursor:pointer;border-bottom:2px solid transparent;transition:all .2s}
+.tab:hover{color:var(--text)}
+.tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+
+.page{display:none;padding:20px 24px}
+.page.active{display:block}
+
+.grid{display:grid;gap:14px}
+.g2{grid-template-columns:repeat(2,1fr)}
+.g3{grid-template-columns:repeat(3,1fr)}
+.g4{grid-template-columns:repeat(4,1fr)}
+@media(max-width:1100px){.g3,.g4{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:700px){.g2,.g3,.g4{grid-template-columns:1fr}}
+
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px;position:relative;overflow:hidden}
+.card.accent-border{border-left:3px solid var(--accent)}
+.card h2{font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);margin-bottom:10px;font-weight:600}
+.card h3{font-size:.85rem;color:var(--text);margin-bottom:6px}
+
+/* Widgets */
+.big-num{font-size:2.2rem;font-weight:800;line-height:1}
+.big-num.gradient{color:var(--accent2)}
+.unit{font-size:.7rem;color:var(--dim);margin-left:2px}
+.stat-label{font-size:.75rem;color:var(--sub);margin-top:2px}
+
+.gauge-row{display:flex;align-items:center;gap:10px;margin:5px 0;font-size:.82rem}
+.gauge-lbl{width:90px;color:var(--sub);font-size:.78rem}
+.gauge-bar{flex:1;height:7px;background:var(--border);border-radius:4px;overflow:hidden}
+.gauge-fill{height:100%;border-radius:4px;transition:width .4s ease}
+.gauge-val{width:50px;text-align:right;font-variant-numeric:tabular-nums;font-size:.8rem}
+
+.dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;display:inline-block}
+.dot-ok{background:var(--green);box-shadow:0 0 8px var(--green)}
+.dot-off{background:var(--red);box-shadow:0 0 4px var(--red)}
+.dot-warn{background:var(--yellow)}
+
+.badge{display:inline-block;padding:2px 8px;border-radius:8px;font-size:.7rem;font-weight:600}
+.b-gpu{background:#102a28;color:#5eead4}
+.b-cpu{background:#2a2515;color:#facc15}
+.b-ok{background:#14281e;color:#22c55e}
+.b-run{background:#102a28;color:#5eead4;animation:pulse 1.5s infinite}
+.b-err{background:#2a1414;color:#ef4444}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+
+.btn{display:inline-flex;align-items:center;gap:6px;padding:8px 16px;border-radius:8px;border:1px solid var(--border);
+  background:var(--card2);color:var(--text);font-size:.82rem;cursor:pointer;transition:all .2s}
+.btn:hover{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn:disabled{opacity:.4;pointer-events:none}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn.primary:hover{background:var(--accent2)}
+.btn.sm{padding:4px 10px;font-size:.75rem}
+.btn.danger{border-color:var(--red);color:var(--red)}
+.btn.danger:hover{background:var(--red);color:#fff}
+
+select,input,textarea{background:var(--card2);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:8px;font-size:.82rem;font-family:inherit}
+select:focus,input:focus,textarea:focus{outline:none;border-color:var(--accent)}
+textarea{resize:vertical;width:100%}
+
+table{width:100%;border-collapse:collapse;font-size:.78rem}
+th{text-align:left;color:var(--dim);font-weight:600;padding:6px 10px;border-bottom:1px solid var(--border);font-size:.72rem;text-transform:uppercase;letter-spacing:.04em}
+td{padding:7px 10px;border-bottom:1px solid #242424}
+tr:hover td{background:#222}
+
+.toast{position:fixed;bottom:20px;right:20px;background:var(--card);border:1px solid var(--accent);
+  border-radius:8px;padding:12px 20px;z-index:999;font-size:.85rem;
+  transform:translateY(100px);opacity:0;transition:all .3s}
+.toast.show{transform:translateY(0);opacity:1}
+
+canvas{max-height:180px}
+
+.container-card{display:flex;flex-direction:column;gap:8px}
+.container-card .status-line{display:flex;align-items:center;gap:8px;font-size:.88rem}
+.container-card .detail{font-size:.78rem;color:var(--sub)}
+.container-card .actions{display:flex;gap:6px;margin-top:6px}
+
+.compare-grid{display:grid;grid-template-columns:200px 1fr 1fr;gap:0;font-size:.82rem}
+.compare-grid .label{padding:8px 12px;background:var(--card2);border-bottom:1px solid var(--border);color:var(--sub);font-weight:500}
+.compare-grid .val{padding:8px 12px;border-bottom:1px solid var(--border);text-align:center;font-variant-numeric:tabular-nums}
+.compare-grid .val.better{color:var(--green);font-weight:600}
+.compare-grid .val.worse{color:var(--red)}
+.compare-grid .header{padding:8px 12px;background:var(--accent);color:#fff;font-weight:700;text-align:center;font-size:.78rem;text-transform:uppercase}
+
+.log-box{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px;font-family:'Fira Code','Cascadia Code',monospace;font-size:.75rem;color:var(--sub);max-height:200px;overflow-y:auto;white-space:pre-wrap}
+
+.inference-output{background:var(--card2);border:1px solid var(--border);border-radius:8px;padding:14px;
+  font-size:.88rem;line-height:1.5;min-height:60px;max-height:300px;overflow-y:auto;white-space:pre-wrap}
+.field-hint{font-size:.74rem;color:var(--dim);margin-top:4px;line-height:1.45}
+.help-chip{display:inline-flex;align-items:center;padding:2px 8px;border:1px solid var(--border);border-radius:999px;
+  font-size:.7rem;color:var(--sub);background:var(--card2)}
+.vision-stage{position:relative;background:var(--bg);border:1px solid var(--border);border-radius:8px;min-height:220px;
+  display:flex;align-items:center;justify-content:center;overflow:hidden}
+.vision-stage img{display:block;max-width:100%;max-height:420px;height:auto}
+.vision-overlay{position:absolute;inset:0;pointer-events:none}
+.vision-box{position:absolute;border:2px solid var(--accent2);background:rgba(20,184,166,.14);border-radius:4px;overflow:hidden}
+.vision-box span{position:absolute;left:0;top:0;background:rgba(10,12,16,.9);color:#fff;font-size:.68rem;padding:2px 6px}
+.metric-help{cursor:help;border-bottom:1px dotted #737373}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>PDC-IA</h1>
+  <span class="tag">v1.0</span>
+  <span style="color:var(--sub);font-size:.78rem">Benchmark de hardware</span>
+  <div class="spacer"></div>
+  <span class="clock" id="clock"></span>
+</div>
+
+<div class="tabs">
+  <div class="tab active" onclick="showTab('monitor')">Monitoramento</div>
+  <div class="tab" onclick="showTab('benchmark')">Benchmarks</div>
+  <div class="tab" onclick="showTab('inference')">Inferência</div>
+  <div class="tab" onclick="showTab('results')">Resultados</div>
+  <div class="tab" onclick="showTab('compare')">Comparação</div>
+  <div class="tab" onclick="showTab('hardware')">Hardware</div>
+  <div class="tab" onclick="showTab('config')">Configuração</div>
+</div>
+
+<!-- Monitoramento -->
+<div class="page active" id="page-monitor">
+  <div class="grid g4" style="margin-bottom:14px">
+    <div class="card accent-border">
+      <h2>GPU Utilização</h2>
+      <div class="big-num gradient" id="m-gpu-util">—</div>
+      <div class="stat-label">%</div>
+    </div>
+    <div class="card accent-border">
+      <h2>VRAM</h2>
+      <div class="big-num gradient" id="m-vram">—</div>
+      <div class="stat-label" id="m-vram-detail"></div>
+    </div>
+    <div class="card accent-border">
+      <h2>GPU Temp</h2>
+      <div class="big-num gradient" id="m-gpu-temp">—</div>
+      <div class="stat-label">°C</div>
+    </div>
+    <div class="card accent-border">
+      <h2>Potência</h2>
+      <div class="big-num gradient" id="m-power">—</div>
+      <div class="stat-label">W</div>
+    </div>
+  </div>
+
+  <div class="grid g2" style="margin-bottom:14px">
+    <div class="card">
+      <h2>GPU — Tempo Real</h2>
+      <canvas id="chart-gpu" height="160"></canvas>
+    </div>
+    <div class="card">
+      <h2>Sistema — CPU & RAM</h2>
+      <canvas id="chart-sys" height="160"></canvas>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:14px">
+    <h2>Recursos do Sistema</h2>
+    <div class="gauge-row"><span class="gauge-lbl">GPU Compute</span><div class="gauge-bar"><div class="gauge-fill" id="bar-gpu" style="background:var(--accent);width:0%"></div></div><span class="gauge-val" id="pct-gpu">—</span></div>
+    <div class="gauge-row"><span class="gauge-lbl">VRAM</span><div class="gauge-bar"><div class="gauge-fill" id="bar-vram" style="background:var(--cyan);width:0%"></div></div><span class="gauge-val" id="pct-vram">—</span></div>
+    <div class="gauge-row"><span class="gauge-lbl">RAM</span><div class="gauge-bar"><div class="gauge-fill" id="bar-ram" style="background:var(--green);width:0%"></div></div><span class="gauge-val" id="pct-ram">—</span></div>
+    <div class="gauge-row"><span class="gauge-lbl">CPU</span><div class="gauge-bar"><div class="gauge-fill" id="bar-cpu" style="background:var(--yellow);width:0%"></div></div><span class="gauge-val" id="pct-cpu">—</span></div>
+    <div class="gauge-row"><span class="gauge-lbl">Disco</span><div class="gauge-bar"><div class="gauge-fill" id="bar-disk" style="background:var(--blue);width:0%"></div></div><span class="gauge-val" id="pct-disk">—</span></div>
+  </div>
+
+  <div class="grid g3">
+    <div class="card container-card">
+      <h2>Vision :8010</h2>
+      <div id="c-vision"></div>
+    </div>
+    <div class="card container-card">
+      <h2>SLM :8011</h2>
+      <div id="c-slm"></div>
+    </div>
+    <div class="card container-card">
+      <h2>Audio :8012</h2>
+      <div id="c-audio"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Benchmarks -->
+<div class="page" id="page-benchmark">
+  <div class="grid g2" style="margin-bottom:14px">
+    <div class="card">
+      <h2>Vision — Detecção de Objetos</h2>
+      <p style="font-size:.8rem;color:var(--sub);margin-bottom:10px">YOLOv8 — imagens sintéticas 640×640</p>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:10px">
+        <div style="display:flex;gap:8px;align-items:center">
+          <span style="font-size:.78rem;color:var(--sub);width:55px">Modelo:</span>
+          <select id="bench-vision-model" style="flex:1"></select>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <span style="font-size:.78rem;color:var(--sub);width:55px">Perfil:</span>
+          <select id="bench-vision-profile" style="flex:1">
+            <option value="express">Express (~15s)</option>
+            <option value="quick" selected>Quick (~30s)</option>
+            <option value="standard">Standard (~2min)</option>
+            <option value="extended">Extended (~10min)</option>
+          </select>
+        </div>
+        <button class="btn primary" onclick="runBench('vision')" id="btn-bench-vision">Executar Vision</button>
+      </div>
+      <div id="bench-vision-status"></div>
+    </div>
+    <div class="card">
+      <h2>SLM — Geração de Texto</h2>
+      <p style="font-size:.8rem;color:var(--sub);margin-bottom:10px">Throughput tokens/s, latência, TTFT</p>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:10px">
+        <div style="display:flex;gap:8px;align-items:center">
+          <span style="font-size:.78rem;color:var(--sub);width:55px">Modelo:</span>
+          <select id="bench-slm-model" style="flex:1"></select>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <span style="font-size:.78rem;color:var(--sub);width:55px">Perfil:</span>
+          <select id="bench-slm-profile" style="flex:1">
+            <option value="express">Express (~15s)</option>
+            <option value="quick" selected>Quick (~30s)</option>
+            <option value="standard">Standard (~2min)</option>
+            <option value="extended">Extended (~10min)</option>
+          </select>
+        </div>
+        <button class="btn primary" onclick="runBench('slm')" id="btn-bench-slm">Executar SLM</button>
+      </div>
+      <div id="bench-slm-status"></div>
+    </div>
+    <div class="card">
+      <h2>Audio — ASR (Transcrição)</h2>
+      <p style="font-size:.8rem;color:var(--sub);margin-bottom:10px">Whisper — WER, latência, throughput de transcrição</p>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:10px">
+        <div style="display:flex;gap:8px;align-items:center">
+          <span style="font-size:.78rem;color:var(--sub);width:55px">Modelo:</span>
+          <select id="bench-audio-asr-model" style="flex:1"></select>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <span style="font-size:.78rem;color:var(--sub);width:55px">Perfil:</span>
+          <select id="bench-audio-asr-profile" style="flex:1">
+            <option value="express">Express (~15s)</option>
+            <option value="quick" selected>Quick (~30s)</option>
+            <option value="standard">Standard (~2min)</option>
+            <option value="extended">Extended (~10min)</option>
+          </select>
+        </div>
+        <button class="btn primary" onclick="runBenchAudio('asr')" id="btn-bench-audio-asr">Executar ASR</button>
+      </div>
+      <div id="bench-audio-asr-status"></div>
+    </div>
+    <div class="card">
+      <h2>Audio — TTS (Síntese de Voz)</h2>
+      <p style="font-size:.8rem;color:var(--sub);margin-bottom:10px">Piper — latência, throughput de síntese</p>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:10px">
+        <div style="display:flex;gap:8px;align-items:center">
+          <span style="font-size:.78rem;color:var(--sub);width:55px">Modelo:</span>
+          <select id="bench-audio-tts-model" style="flex:1"></select>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <span style="font-size:.78rem;color:var(--sub);width:55px">Perfil:</span>
+          <select id="bench-audio-tts-profile" style="flex:1">
+            <option value="express">Express (~15s)</option>
+            <option value="quick" selected>Quick (~30s)</option>
+            <option value="standard">Standard (~2min)</option>
+            <option value="extended">Extended (~10min)</option>
+          </select>
+        </div>
+        <button class="btn primary" onclick="runBenchAudio('tts')" id="btn-bench-audio-tts">Executar TTS</button>
+      </div>
+      <div id="bench-audio-tts-status"></div>
+    </div>
+  </div>
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+      <h2 style="margin:0">Executar Todos</h2>
+      <button class="btn primary" onclick="runAllBench()">Benchmark Completo</button>
+    </div>
+    <div id="bench-all-log" class="log-box" style="min-height:80px">Aguardando...</div>
+  </div>
+</div>
+
+<!-- Inferencia -->
+<div class="page" id="page-inference">
+  <div class="grid g2">
+    <div class="card">
+      <h2>SLM — Chat</h2>
+      <div style="margin-bottom:8px;display:flex;gap:8px;align-items:center">
+        <span style="font-size:.78rem;color:var(--sub)">Modelo:</span>
+        <select id="inf-model" onchange="switchModelInf()"></select>
+        <span style="font-size:.78rem;color:var(--sub)">Max tokens:</span>
+        <input type="number" id="inf-tokens" value="256" min="16" max="2048" style="width:70px">
+      </div>
+      <textarea id="inf-prompt" rows="3" placeholder="Digite o prompt...">Explique em três frases o que é processamento em borda.</textarea>
+      <div style="margin-top:8px;display:flex;gap:8px">
+        <button class="btn primary" onclick="doInference()" id="btn-inf">Gerar</button>
+        <span id="inf-time" style="font-size:.78rem;color:var(--sub);align-self:center"></span>
+      </div>
+      <div id="inf-output" class="inference-output" style="margin-top:10px"></div>
+    </div>
+    <div class="card">
+      <h2>Audio — TTS</h2>
+      <p style="font-size:.78rem;color:var(--sub);margin-bottom:8px">Síntese de voz com o modelo TTS carregado</p>
+      <textarea id="tts-text" rows="2" placeholder="Texto para sintetizar...">Teste de síntese de voz em português.</textarea>
+      <div style="margin-top:8px;display:flex;gap:8px">
+        <button class="btn primary" onclick="doTTS()" id="btn-tts">Sintetizar</button>
+        <span id="tts-time" style="font-size:.78rem;color:var(--sub);align-self:center"></span>
+      </div>
+      <div id="tts-output" style="margin-top:10px"></div>
+    </div>
+  </div>
+  <div class="card" style="margin-top:14px">
+    <h2>Vision — Imagem</h2>
+    <p style="font-size:.78rem;color:var(--sub);margin-bottom:10px">Envie uma imagem para testar detecção com o modelo de visão selecionado.</p>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+      <span style="font-size:.78rem;color:var(--sub)">Modelo:</span>
+      <select id="inf-vision-model" style="min-width:260px"></select>
+      <input id="inf-vision-file" type="file" accept="image/*" onchange="previewVisionFile()">
+      <button class="btn primary" onclick="doVisionInference()" id="btn-inf-vision">Analisar</button>
+      <span id="inf-vision-time" style="font-size:.78rem;color:var(--sub)"></span>
+    </div>
+    <div class="field-hint">Selecione o arquivo e clique em analisar. O modelo é carregado automaticamente antes da inferência.</div>
+    <div style="display:grid;grid-template-columns:minmax(320px,1.2fr) minmax(260px,.8fr);gap:14px;margin-top:12px">
+      <div class="vision-stage">
+        <img id="inf-vision-preview" alt="" style="display:none">
+        <div id="inf-vision-empty" style="color:var(--dim);font-size:.82rem">Nenhuma imagem carregada.</div>
+        <div id="inf-vision-overlay" class="vision-overlay"></div>
+      </div>
+      <div>
+        <div id="inf-vision-output" class="inference-output" style="min-height:220px"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Resultados -->
+<div class="page" id="page-results">
+  <div style="background:#171717;border:1px solid #303030;border-radius:8px;padding:16px;margin-bottom:14px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <span style="font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:#737373;font-weight:600">
+        Resultados <span id="res-count" style="font-weight:400;text-transform:none;letter-spacing:0;color:#a3a3a3"></span>
+      </span>
+      <div style="display:flex;gap:8px">
+        <select id="res-filter" onchange="renderResultsTable()">
+          <option value="all">Todos</option>
+          <option value="vision">Vision</option>
+          <option value="slm">SLM</option>
+          <option value="audio">Audio</option>
+        </select>
+        <button class="btn sm" onclick="exportResults()">Exportar JSON</button>
+      </div>
+    </div>
+    <div style="font-size:.74rem;color:var(--dim);margin:-4px 0 10px 0">Passe o mouse sobre os títulos das métricas para ver definição e método de cálculo.</div>
+    <div style="overflow-x:auto;overflow-y:auto;max-height:60vh">
+      <div style="min-width:920px">
+        <div style="display:flex;padding:0 0 6px 0;border-bottom:1px solid #303030;font-size:.68rem;font-weight:700;color:#737373;text-transform:uppercase;letter-spacing:.05em">
+          <div style="flex:0 0 88px">Data/Hora</div>
+          <div style="flex:0 0 56px">Front</div>
+          <div style="flex:1;min-width:150px">Modelo</div>
+          <div style="flex:0 0 62px">Perfil</div>
+          <div style="flex:0 0 82px" class="metric-help" title="Throughput: número de inferências concluídas por segundo durante a janela do teste de throughput, desconsiderando o warmup.">ops/s</div>
+          <div style="flex:0 0 58px" class="metric-help" title="Latência p50: mediana das amostras individuais coletadas no teste de latência.">p50ms</div>
+          <div style="flex:0 0 58px" class="metric-help" title="Latência p95: percentil 95 das amostras individuais do teste de latência.">p95ms</div>
+          <div style="flex:0 0 58px" class="metric-help" title="Latência p99: percentil 99 das amostras individuais do teste de latência.">p99ms</div>
+          <div style="flex:0 0 58px" class="metric-help" title="Desvio padrão da latência: dispersão entre as amostras do teste de latência.">σ ms</div>
+          <div style="flex:0 0 68px" class="metric-help" title="Pico de RAM observado durante o teste de uso de recursos, em megabytes.">RAM</div>
+          <div style="flex:0 0 52px" class="metric-help" title="Maior utilização percentual de GPU observada durante o teste de uso de recursos.">GPU%</div>
+          <div style="flex:0 0 64px" class="metric-help" title="Maior uso de VRAM observado durante o teste de uso de recursos, em megabytes.">VRAM</div>
+          <div style="flex:0 0 52px" class="metric-help" title="Maior temperatura observada durante o teste de uso de recursos, normalmente da GPU quando disponível.">Temp</div>
+        </div>
+        <div id="res-body"></div>
+      </div>
+    </div>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+    <div style="background:#171717;border:1px solid #303030;border-radius:8px;padding:16px">
+      <div style="font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:#737373;margin-bottom:10px;font-weight:600">Throughput por Teste</div>
+      <canvas id="chart-throughput" height="200"></canvas>
+    </div>
+    <div style="background:#171717;border:1px solid #303030;border-radius:8px;padding:16px">
+      <div style="font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:#737373;margin-bottom:10px;font-weight:600">Latência por Teste</div>
+      <canvas id="chart-latency" height="200"></canvas>
+    </div>
+  </div>
+</div>
+
+<!-- Comparacao -->
+<div class="page" id="page-compare">
+  <div class="card" style="margin-bottom:14px">
+    <h2>Comparar Modelos SLM</h2>
+    <p style="font-size:.8rem;color:var(--sub);margin-bottom:12px">Selecione dois resultados de benchmark SLM para comparar lado a lado.</p>
+    <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:14px">
+      <select id="cmp-a" style="min-width:250px"></select>
+      <span style="color:var(--dim)">vs</span>
+      <select id="cmp-b" style="min-width:250px"></select>
+      <button class="btn primary" onclick="doCompare()">Comparar</button>
+    </div>
+    <div id="compare-grid"></div>
+  </div>
+  <div class="card">
+    <h2>Gráfico de Comparação</h2>
+    <canvas id="chart-compare" height="200"></canvas>
+  </div>
+</div>
+
+<!-- Hardware -->
+<div class="page" id="page-hardware">
+  <div class="grid g2">
+    <div class="card">
+      <h2>GPU</h2>
+      <div id="hw-gpu"></div>
+    </div>
+    <div class="card">
+      <h2>Sistema</h2>
+      <div id="hw-sys"></div>
+    </div>
+  </div>
+  <div class="card" style="margin-top:14px">
+    <h2>Containers Docker</h2>
+    <div id="hw-containers"></div>
+  </div>
+  <div class="card" style="margin-top:14px">
+    <h2>Scorecard — Últimos Resultados</h2>
+    <div id="hw-scorecard"></div>
+  </div>
+</div>
+
+<!-- Configuracao -->
+<div class="page" id="page-config">
+  <div class="grid g2">
+    <div class="card">
+      <h2>Perfis de Benchmark</h2>
+      <p style="font-size:.8rem;color:var(--sub);margin-bottom:10px">
+        Edite os parâmetros dos perfis de benchmark. As alterações são salvas no arquivo <code>config/benchmark.yaml</code>
+        e ficam disponíveis imediatamente para os próximos benchmarks (sem rebuild dos containers).
+      </p>
+      <p style="font-size:.78rem;color:var(--dim);margin-bottom:10px">
+        <b>Parâmetros por seção:</b><br>
+        • <b>throughput</b>: duration_sec (duração do teste), warmup (iterações de aquecimento)<br>
+        • <b>latency</b>: samples (nº de amostras), percentiles (lista: [50,95,99])<br>
+        • <b>resource_usage</b>: duration_sec, interval_sec (intervalo de coleta)<br>
+        • <b>sustained_load</b>: duration_min (0 = desabilitado)<br>
+        • <b>memory_bandwidth</b>: enabled (true/false), patterns, block_sizes_kb
+      </p>
+      <textarea id="cfg-yaml" rows="25" style="font-family:monospace;font-size:.78rem"></textarea>
+      <div style="margin-top:8px;display:flex;gap:8px">
+        <button class="btn primary" onclick="saveConfig()">Salvar</button>
+        <button class="btn" onclick="loadConfig()">Recarregar</button>
+      </div>
+      <div id="cfg-status" style="font-size:.78rem;color:var(--sub);margin-top:6px"></div>
+    </div>
+    <div class="card">
+      <h2>Guia de Configuração</h2>
+      <div style="font-size:.82rem;line-height:1.6;color:var(--sub)">
+        <h3 style="color:var(--text);margin-bottom:6px">Como funciona</h3>
+        <p>Cada perfil define parâmetros para 5 tipos de teste:</p>
+        <ol style="padding-left:16px;margin:8px 0">
+          <li><b>Throughput</b> — Roda inferências continuamente por <code>duration_sec</code> e mede ops/s</li>
+          <li><b>Latência</b> — Executa <code>samples</code> inferências individuais e calcula percentis</li>
+          <li><b>Uso de recursos</b> — Monitora CPU/RAM/GPU/VRAM/temp durante <code>duration_sec</code></li>
+          <li><b>Carga sustentada</b> — Roda por <code>duration_min</code> minutos medindo degradação (0 = skip)</li>
+          <li><b>Bandwidth de memória</b> — Testa largura de banda com padrões sequencial/random</li>
+        </ol>
+        <h3 style="color:var(--text);margin:12px 0 6px">Perfis próprios</h3>
+        <p>Você pode criar perfis novos, alterar parâmetros ou remover seções inteiras.
+           Por exemplo, para criar um perfil "custom":</p>
+        <pre style="background:var(--bg);padding:8px;border-radius:6px;margin-top:6px;font-size:.75rem">profiles:
+  custom:
+    throughput: {duration_sec: 20, warmup: 2}
+    latency: {samples: 30, percentiles: [50, 99]}
+    resource_usage: {duration_sec: 20, interval_sec: 1}
+    sustained_load: {duration_min: 0}
+    memory_bandwidth: {enabled: false}</pre>
+        <h3 style="color:var(--text);margin:12px 0 6px">TTS e ASR na GPU</h3>
+        <p><b>Whisper (ASR)</b>: O modelo <code>faster-whisper</code> suporta GPU via CTranslate2/CUDA.
+           Atualmente roda em CPU no container. Para habilitar GPU, seria necessário instalar
+           <code>ctranslate2</code> com CUDA no Dockerfile do audio.</p>
+        <p style="margin-top:4px"><b>Piper (TTS)</b>: Usa ONNX Runtime. Suporta GPU via <code>onnxruntime-gpu</code>,
+           mas o ganho é marginal para modelos pequenos — o overhead de transferência CPU↔GPU supera o ganho.
+           Para vozes pequenas como a pt-BR-faber, CPU é mais eficiente.</p>
+      </div>
+    </div>
+  </div>
+  <div class="card" style="margin-top:14px">
+    <h2>Modelos</h2>
+    <p style="font-size:.8rem;color:var(--sub);margin-bottom:12px">
+      Cadastre, atualize, torne padrão e ative modelos sem editar <code>config/models.yaml</code>.
+      O catálogo é salvo no host e os serviços recarregam a configuração em runtime.
+    </p>
+    <div class="grid g2">
+      <div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+          <div>
+            <div style="font-size:.74rem;color:var(--sub);margin-bottom:4px">Tipo</div>
+            <select id="model-target" onchange="onModelTargetChange()">
+              <option value="vision">Vision</option>
+              <option value="slm">SLM</option>
+              <option value="audio_asr">Audio ASR</option>
+              <option value="audio_tts">Audio TTS</option>
+            </select>
+          </div>
+          <div>
+            <div style="font-size:.74rem;color:var(--sub);margin-bottom:4px">Nome amigável</div>
+            <input id="model-description" placeholder="Opcional. Se vazio, o nome vem do arquivo">
+          </div>
+        </div>
+        <div style="margin-bottom:10px">
+          <div id="model-source-label" style="font-size:.74rem;color:var(--sub);margin-bottom:4px">Link principal</div>
+          <input id="model-source" placeholder="Cole aqui o link do arquivo do modelo">
+          <div id="model-source-hint" class="field-hint"></div>
+        </div>
+        <div id="model-source-extra-wrap" style="display:none;margin-bottom:10px">
+          <div id="model-source-extra-label" style="font-size:.74rem;color:var(--sub);margin-bottom:4px">Link complementar</div>
+          <input id="model-source-extra" placeholder="">
+          <div id="model-source-extra-hint" class="field-hint"></div>
+        </div>
+        <div style="display:flex;gap:14px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
+          <label style="display:flex;gap:6px;align-items:center;font-size:.8rem;color:var(--sub)">
+            <input id="model-set-default" type="checkbox">
+            Tornar padrão
+          </label>
+          <label style="display:flex;gap:6px;align-items:center;font-size:.8rem;color:var(--sub)">
+            <input id="model-activate-now" type="checkbox" checked>
+            Carregar agora
+          </label>
+        </div>
+        <div class="field-hint" style="margin-top:-2px;margin-bottom:10px">O modelo padrão vira a seleção inicial nas abas Benchmarks e Inferência.</div>
+        <details id="model-advanced" style="margin:10px 0">
+          <summary style="cursor:pointer;color:var(--sub);font-size:.8rem">Opções avançadas</summary>
+          <div style="padding-top:10px">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+              <div>
+                <div style="font-size:.74rem;color:var(--sub);margin-bottom:4px">Chave técnica</div>
+                <input id="model-key" placeholder="Opcional. Ex.: qwen35-4b-q4">
+              </div>
+              <div>
+                <div style="font-size:.74rem;color:var(--sub);margin-bottom:4px">Arquivo local</div>
+                <input id="model-filename" placeholder="Opcional">
+              </div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+              <div>
+                <div style="font-size:.74rem;color:var(--sub);margin-bottom:4px">Tamanho (MB)</div>
+                <input id="model-size-mb" type="number" min="0" step="0.1" placeholder="637">
+              </div>
+              <div>
+                <div style="font-size:.74rem;color:var(--sub);margin-bottom:4px">RAM mínima (GB)</div>
+                <input id="model-min-ram" type="number" min="0" step="0.1" placeholder="2">
+              </div>
+            </div>
+            <div style="display:flex;gap:14px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
+              <label style="display:flex;gap:6px;align-items:center;font-size:.8rem;color:var(--sub)">
+                <input id="model-gpu-capable" type="checkbox" checked>
+                GPU capaz
+              </label>
+            </div>
+            <div id="model-fields-slm" style="display:none">
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+                <div>
+                  <div style="font-size:.74rem;color:var(--sub);margin-bottom:4px">Formato de chat</div>
+                  <select id="model-slm-chat-format">
+                    <option value="">Auto</option>
+                    <option value="tinyllama">tinyllama</option>
+                    <option value="chatml">chatml</option>
+                    <option value="gemma3">gemma3</option>
+                  </select>
+                </div>
+                <div>
+                  <div style="font-size:.74rem;color:var(--sub);margin-bottom:4px">GPU layers</div>
+                  <input id="model-slm-gpu-layers" type="number" min="0" step="1" value="33">
+                </div>
+              </div>
+              <div style="margin-bottom:10px">
+                <div style="font-size:.74rem;color:var(--sub);margin-bottom:4px">Contexto</div>
+                <input id="model-slm-context-length" type="number" min="256" step="256" value="4096">
+              </div>
+            </div>
+            <div id="model-fields-audio_asr" style="display:none">
+              <div style="margin-bottom:10px">
+                <div style="font-size:.74rem;color:var(--sub);margin-bottom:4px">Idiomas</div>
+                <input id="model-asr-languages" placeholder="Opcional. Ex.: pt,en,es">
+              </div>
+            </div>
+            <div id="model-fields-audio_tts" style="display:none">
+              <div style="margin-bottom:10px">
+                <div style="font-size:.74rem;color:var(--sub);margin-bottom:4px">Config JSON</div>
+                <input id="model-tts-config-url" placeholder="Opcional. Se vazio, tenta usar .onnx.json">
+              </div>
+            </div>
+          </div>
+        </details>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0 10px 0">
+          <span class="help-chip">Hugging Face: cola o link do arquivo</span>
+          <span class="help-chip">GitHub Releases: funciona direto</span>
+          <span class="help-chip">ASR: use o ID do faster-whisper</span>
+          <span class="help-chip">Ollama: ainda não direto</span>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn primary" onclick="saveModel()">Salvar Modelo</button>
+          <button class="btn" onclick="resetModelForm()">Limpar</button>
+        </div>
+        <div id="model-form-status" style="font-size:.78rem;color:var(--sub);margin-top:8px"></div>
+      </div>
+      <div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <h3 style="margin:0">Catálogo Atual</h3>
+          <button class="btn sm" onclick="loadModelCatalog()">Recarregar</button>
+        </div>
+        <div id="models-catalog" style="display:flex;flex-direction:column;gap:12px"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+/* State */
+let allResults = [];
+let metrics = {};
+let modelCatalogData = {};
+let lastResultsRenderKey = '';
+let visionPreviewMeta = {width:0,height:0};
+
+/* Tabs */
+function showTab(name) {
+  document.querySelectorAll('.tab').forEach((t,i) => {
+    const pages = ['monitor','benchmark','inference','results','compare','hardware','config'];
+    t.classList.toggle('active', pages[i] === name);
+  });
+  document.querySelectorAll('.page').forEach(p => p.classList.toggle('active', p.id === 'page-'+name));
+  if(name === 'results') refreshResultsIfNeeded(true, true);
+  if(name === 'compare') populateCompareSelects();
+}
+
+/* Toast */
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 3000);
+}
+
+function getFilteredResults(filter) {
+  return filter === 'all' ? allResults : allResults.filter(x => x.front === filter);
+}
+
+function getResultsRenderKey(filter) {
+  const rows = getFilteredResults(filter);
+  const first = rows[0] || {};
+  return [filter, rows.length, first.file || '', first.timestamp || ''].join('|');
+}
+
+function refreshResultsIfNeeded(force=false, showLoading=false) {
+  const page = document.getElementById('page-results');
+  if(!page || !page.classList.contains('active')) return;
+  const filter = document.getElementById('res-filter')?.value || 'all';
+  const key = getResultsRenderKey(filter);
+  if(force || key !== lastResultsRenderKey) {
+    loadResultsFromServer({showLoading, renderKey:key});
+  }
+}
+
+function basenameFromUrl(value) {
+  return String(value || '').split('/').pop().split('?')[0];
+}
+
+function syncSelectWithRuntime(selectId, target, runtimeModel) {
+  const sel = document.getElementById(selectId);
+  const group = modelCatalogData[target];
+  if(!sel || !group || !runtimeModel) return;
+  const runtime = String(runtimeModel).toLowerCase();
+  const match = (group.models || []).find(item => {
+    const cfg = item.config || {};
+    const candidates = [
+      item.key,
+      cfg.model_id,
+      cfg.filename,
+      basenameFromUrl(cfg.url),
+      basenameFromUrl(cfg.model_url),
+      cfg.description,
+    ]
+      .filter(Boolean)
+      .map(v => String(v).toLowerCase());
+    return candidates.some(v => runtime.includes(v));
+  });
+  if(match) sel.value = match.key;
+}
+
+/* Clock */
+setInterval(() => {
+  document.getElementById('clock').textContent = new Date().toLocaleTimeString('pt-BR');
+}, 1000);
+
+/* Charts */
+const MAX_H = 60;
+const gpuHist = {util:[], vram:[], temp:[]};
+const sysHist = {cpu:[], ram:[]};
+
+const chartGpu = new Chart(document.getElementById('chart-gpu'), {
+  type:'line',
+  data:{labels:Array(MAX_H).fill(''),datasets:[
+    {label:'GPU %',data:[],borderColor:'#0f766e',backgroundColor:'#0f766e20',tension:.3,fill:true,pointRadius:0,borderWidth:1.5},
+    {label:'VRAM %',data:[],borderColor:'#0891b2',backgroundColor:'transparent',tension:.3,pointRadius:0,borderWidth:1.5},
+    {label:'Temp °C',data:[],borderColor:'#ef4444',backgroundColor:'transparent',tension:.3,pointRadius:0,borderWidth:1,yAxisID:'y1'},
+  ]},
+  options:{animation:false,responsive:true,maintainAspectRatio:true,interaction:{mode:'index',intersect:false},
+    scales:{
+      y:{min:0,max:100,ticks:{color:'#737373',font:{size:9}},grid:{color:'#2a2a2a'},title:{display:true,text:'%',color:'#737373',font:{size:9}}},
+      y1:{position:'right',min:20,max:95,ticks:{color:'#737373',font:{size:9}},grid:{display:false},title:{display:true,text:'°C',color:'#737373',font:{size:9}}},
+      x:{display:false}
+    },
+    plugins:{legend:{labels:{color:'#a3a3a3',font:{size:9},boxWidth:8,padding:8}}}
+  }
+});
+
+const chartSys = new Chart(document.getElementById('chart-sys'), {
+  type:'line',
+  data:{labels:Array(MAX_H).fill(''),datasets:[
+    {label:'CPU %',data:[],borderColor:'#eab308',backgroundColor:'#eab30820',tension:.3,fill:true,pointRadius:0,borderWidth:1.5},
+    {label:'RAM %',data:[],borderColor:'#22c55e',backgroundColor:'transparent',tension:.3,pointRadius:0,borderWidth:1.5},
+  ]},
+  options:{animation:false,responsive:true,maintainAspectRatio:true,
+    scales:{y:{min:0,max:100,ticks:{color:'#737373',font:{size:9}},grid:{color:'#2a2a2a'}},x:{display:false}},
+    plugins:{legend:{labels:{color:'#a3a3a3',font:{size:9},boxWidth:8,padding:8}}}
+  }
+});
+
+let chartThroughput, chartLatency, chartCompare;
+
+function push(arr, v) { arr.push(v); if(arr.length > MAX_H) arr.shift(); }
+
+/* Container cards */
+function containerHTML(data, front) {
+  if(!data || data.status==='offline') return `<div class="status-line"><span class="dot dot-off"></span> Offline</div>`;
+  const badge = data.gpu ? '<span class="badge b-gpu">CUDA</span>' : '<span class="badge b-cpu">CPU</span>';
+  const model = data.model || data.asr || '';
+  return `
+    <div class="status-line"><span class="dot dot-ok"></span> Online ${badge}</div>
+    <div class="detail">${model}</div>
+    ${data.tts ? '<div class="detail">TTS: '+data.tts+'</div>' : ''}
+  `;
+}
+
+/* Metrics */
+async function fetchMetrics() {
+  try {
+    const r = await fetch('/api/metrics');
+    metrics = await r.json();
+    const g = metrics.gpu || {};
+    const s = metrics.system || {};
+
+    // Big numbers
+    if(!g.error) {
+      document.getElementById('m-gpu-util').textContent = (g.util_gpu_pct||0).toFixed(0);
+      document.getElementById('m-vram').textContent = (g.mem_used_mb||0).toFixed(0);
+      document.getElementById('m-vram-detail').textContent = `${(g.mem_used_mb||0).toFixed(0)} / ${(g.mem_total_mb||0).toFixed(0)} MB`;
+      document.getElementById('m-gpu-temp').textContent = (g.temp_c||0).toFixed(0);
+      document.getElementById('m-power').textContent = g.power_w != null ? g.power_w.toFixed(1) : '—';
+
+      const vramPct = g.mem_total_mb ? (g.mem_used_mb/g.mem_total_mb*100) : 0;
+      setGauge('gpu', g.util_gpu_pct||0, '%');
+      setGauge('vram', vramPct, '%');
+
+      push(gpuHist.util, g.util_gpu_pct||0);
+      push(gpuHist.vram, vramPct);
+      push(gpuHist.temp, g.temp_c||0);
+      chartGpu.data.datasets[0].data = [...gpuHist.util];
+      chartGpu.data.datasets[1].data = [...gpuHist.vram];
+      chartGpu.data.datasets[2].data = [...gpuHist.temp];
+      chartGpu.update('none');
+    }
+    if(!s.error) {
+      setGauge('ram', s.ram_pct||0, '%');
+      setGauge('cpu', s.cpu_pct||0, '%');
+      setGauge('disk', s.disk_pct||0, '%');
+      push(sysHist.cpu, s.cpu_pct||0);
+      push(sysHist.ram, s.ram_pct||0);
+      chartSys.data.datasets[0].data = [...sysHist.cpu];
+      chartSys.data.datasets[1].data = [...sysHist.ram];
+      chartSys.update('none');
+    }
+
+    // Containers
+    const c = metrics.containers || {};
+    document.getElementById('c-vision').innerHTML = containerHTML(c.vision, 'vision');
+    document.getElementById('c-slm').innerHTML = containerHTML(c.slm, 'slm');
+    document.getElementById('c-audio').innerHTML = containerHTML(c.audio, 'audio');
+
+    // Sync selectors with currently loaded runtime models
+    if(c.slm && c.slm.model) syncSelectWithRuntime('inf-model', 'slm', c.slm.model);
+    if(c.vision && c.vision.model) syncSelectWithRuntime('inf-vision-model', 'vision', c.vision.model);
+    if(c.audio && c.audio.asr) syncSelectWithRuntime('bench-audio-asr-model', 'audio_asr', c.audio.asr);
+    if(c.audio && c.audio.tts) syncSelectWithRuntime('bench-audio-tts-model', 'audio_tts', c.audio.tts);
+
+    // Store results for charts/compare
+    allResults = metrics.results || [];
+    refreshResultsIfNeeded(false, false);
+    if(document.getElementById('page-compare').classList.contains('active')) populateCompareSelects();
+
+    // Benchmark status
+    const bs = metrics.benchmark_status || {};
+    for(const front of ['vision','slm','audio']) {
+      const st = bs[front];
+      // Main front button (vision, slm)
+      const el = document.getElementById('bench-'+front+'-status');
+      const btn = document.getElementById('btn-bench-'+front);
+      if(el) {
+        if(st && st.running) {
+          el.innerHTML = `<span class="badge b-run">Executando... ${((Date.now()/1000 - st.started)||0).toFixed(0)}s</span>`;
+          if(btn) btn.disabled = true;
+        } else if(st && st.progress === 'done') {
+          el.innerHTML = `<span class="badge b-ok">Concluído</span>`;
+          if(btn) btn.disabled = false;
+        } else if(st && st.progress === 'error') {
+          el.innerHTML = `<span class="badge b-err">Erro: ${st.error||'?'}</span>`;
+          if(btn) btn.disabled = false;
+        } else {
+          el.innerHTML = '';
+          if(btn) btn.disabled = false;
+        }
+      }
+    }
+    // Audio ASR/TTS status (both share the 'audio' benchmark slot)
+    const audioSt = bs['audio'];
+    for(const mode of ['asr','tts']) {
+      const el = document.getElementById('bench-audio-'+mode+'-status');
+      const btn = document.getElementById('btn-bench-audio-'+mode);
+      if(el) {
+        if(audioSt && audioSt.running) {
+          el.innerHTML = `<span class="badge b-run">Executando... ${((Date.now()/1000 - audioSt.started)||0).toFixed(0)}s</span>`;
+          if(btn) btn.disabled = true;
+        } else if(audioSt && audioSt.progress === 'done') {
+          el.innerHTML = `<span class="badge b-ok">Concluído</span>`;
+          if(btn) btn.disabled = false;
+        } else if(audioSt && audioSt.progress === 'error') {
+          el.innerHTML = `<span class="badge b-err">Erro: ${audioSt.error||'?'}</span>`;
+          if(btn) btn.disabled = false;
+        } else {
+          el.innerHTML = '';
+          if(btn) btn.disabled = false;
+        }
+      }
+    }
+
+    // Hardware tab
+    if(!g.error) {
+      document.getElementById('hw-gpu').innerHTML = `
+        <table>
+          <tr><td style="color:var(--sub)">Nome</td><td>${g.name}</td></tr>
+          <tr><td style="color:var(--sub)">VRAM</td><td>${g.mem_used_mb?.toFixed(0)} / ${g.mem_total_mb?.toFixed(0)} MB</td></tr>
+          <tr><td style="color:var(--sub)">Utilização</td><td>${g.util_gpu_pct?.toFixed(1)}%</td></tr>
+          <tr><td style="color:var(--sub)">Temperatura</td><td>${g.temp_c?.toFixed(0)} °C</td></tr>
+          <tr><td style="color:var(--sub)">Potência</td><td>${g.power_w != null ? g.power_w.toFixed(1)+' W' : 'N/A'}</td></tr>
+          <tr><td style="color:var(--sub)">Clock</td><td>${g.clock_mhz != null ? g.clock_mhz.toFixed(0)+' MHz' : 'N/A'}</td></tr>
+          <tr><td style="color:var(--sub)">Fan</td><td>${g.fan_pct != null ? g.fan_pct.toFixed(0)+'%' : 'N/A'}</td></tr>
+          <tr><td style="color:var(--sub)">P-State</td><td>${g.pstate || 'N/A'}</td></tr>
+        </table>
+      `;
+    }
+    if(!s.error) {
+      document.getElementById('hw-sys').innerHTML = `
+        <table>
+          <tr><td style="color:var(--sub)">CPUs</td><td>${s.cpu_count} cores</td></tr>
+          <tr><td style="color:var(--sub)">CPU Usage</td><td>${s.cpu_pct?.toFixed(1)}%</td></tr>
+          <tr><td style="color:var(--sub)">CPU Temp</td><td>${s.cpu_temp_c != null ? s.cpu_temp_c.toFixed(0)+' °C' : 'N/A'}</td></tr>
+          <tr><td style="color:var(--sub)">RAM</td><td>${s.ram_used_gb?.toFixed(1)} / ${s.ram_total_gb?.toFixed(1)} GB (${s.ram_pct?.toFixed(1)}%)</td></tr>
+          <tr><td style="color:var(--sub)">Disco</td><td>${s.disk_used_gb?.toFixed(0)} / ${s.disk_total_gb?.toFixed(0)} GB (${s.disk_pct?.toFixed(1)}%)</td></tr>
+        </table>
+      `;
+    }
+    document.getElementById('hw-containers').innerHTML = `
+      <table>
+        <tr><th>Container</th><th>Status</th><th>Device</th><th>Model</th></tr>
+        ${['vision','slm','audio'].map(f => {
+          const d = c[f] || {};
+          const st = d.status === 'ok' ? '<span class="badge b-ok">Online</span>' : '<span class="badge b-err">Offline</span>';
+          const dev = d.gpu ? '<span class="badge b-gpu">CUDA</span>' : d.status==='ok' ? '<span class="badge b-cpu">CPU</span>' : '—';
+          return `<tr><td>${f} :${({vision:8010,slm:8011,audio:8012})[f]}</td><td>${st}</td><td>${dev}</td><td style="color:var(--sub)">${d.model||d.asr||'—'}</td></tr>`;
+        }).join('')}
+      </table>
+    `;
+    const scored = (allResults||[]).filter(r => r.performance_score != null || r.primary_metric);
+    document.getElementById('hw-scorecard').innerHTML = scored.length ? `
+      <table>
+        <tr><th>Front</th><th>Modelo</th><th>Métrica</th><th>Score</th><th>Energia/op</th><th>Custo/1k</th></tr>
+        ${scored.slice(0,8).map(r => {
+          const pm = r.primary_metric || {};
+          const metric = pm.value != null ? `${Number(pm.value).toFixed(2)} ${pm.unit||''}` : '—';
+          return `<tr>
+            <td>${r.front||'?'}</td>
+            <td style="color:var(--sub)">${(r.model||'?').replace('.gguf','').slice(0,28)}</td>
+            <td>${metric}</td>
+            <td>${r.performance_score != null ? Number(r.performance_score).toFixed(1) : '—'}</td>
+            <td>${r.energy_per_op_j != null ? Number(r.energy_per_op_j).toFixed(5)+' J' : '—'}</td>
+            <td>${r.cost_per_1k != null ? Number(r.cost_per_1k).toFixed(6) : '—'}</td>
+          </tr>`;
+        }).join('')}
+      </table>` :
+      '<div style="color:var(--sub);font-size:.82rem">Sem scorecards ainda. Execute novos benchmarks para gerar metodologia e score.</div>';
+
+  } catch(e) { console.error('fetch error', e); }
+}
+
+function setGauge(name, val, suffix) {
+  const bar = document.getElementById('bar-'+name);
+  const pct = document.getElementById('pct-'+name);
+  if(bar) bar.style.width = Math.min(val,100)+'%';
+  if(pct) pct.textContent = val.toFixed(1)+suffix;
+}
+
+/* Benchmarks */
+async function runBench(front) {
+  const profile = document.getElementById('bench-'+front+'-profile').value;
+  const modelSel = document.getElementById('bench-'+front+'-model');
+  const model = modelSel && modelSel.value ? modelSel.value : undefined;
+  toast('Iniciando benchmark: '+front+' ('+profile+(model?' · '+model:'')+')');
+  try {
+    const body = {front, profile};
+    if(model) body.model = model;
+    const r = await fetch('/api/benchmark', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(body)
+    });
+    const d = await r.json();
+    if(d.error) throw new Error(d.error);
+  } catch(e) { toast('Erro: '+e.message); }
+}
+
+async function runBenchAudio(mode) {
+  const profile = document.getElementById('bench-audio-'+mode+'-profile').value;
+  const modelSel = document.getElementById('bench-audio-'+mode+'-model');
+  const model = modelSel && modelSel.value ? modelSel.value : undefined;
+  toast('Iniciando benchmark: audio/'+mode+' ('+profile+')');
+  try {
+    const body = {front:'audio', profile, mode};
+    if(model) body.model = model;
+    const r = await fetch('/api/benchmark', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(body)
+    });
+    const d = await r.json();
+    if(d.error) throw new Error(d.error);
+  } catch(e) { toast('Erro: '+e.message); }
+}
+
+async function runAllBench() {
+  const log = document.getElementById('bench-all-log');
+  log.textContent = '[' + new Date().toLocaleTimeString('pt-BR') + '] Iniciando benchmarks sequenciais...\n';
+  const tasks = [
+    {front:'vision', profile: document.getElementById('bench-vision-profile').value,
+      model: (document.getElementById('bench-vision-model')?.value||'') || undefined},
+    {front:'slm', profile: document.getElementById('bench-slm-profile').value,
+      model: (document.getElementById('bench-slm-model')?.value||'') || undefined},
+    {front:'audio', profile: document.getElementById('bench-audio-asr-profile').value, mode:'pipeline',
+      model: {
+        asr: (document.getElementById('bench-audio-asr-model')?.value||'') || undefined,
+        tts: (document.getElementById('bench-audio-tts-model')?.value||'') || undefined,
+      }},
+  ];
+  for(const task of tasks) {
+    log.textContent += `[${new Date().toLocaleTimeString('pt-BR')}] → ${task.front} (${task.profile})...\n`;
+    try {
+      const body = {front:task.front, profile:task.profile};
+      if(task.model) body.model = task.model;
+      if(task.mode) body.mode = task.mode;
+      const startResp = await fetch('/api/benchmark', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(body)
+      });
+      const startData = await startResp.json();
+      if(startData.error) throw new Error(startData.error);
+      let done = false;
+      while(!done) {
+        await new Promise(r => setTimeout(r, 2000));
+        const r = await fetch('/api/metrics');
+        const d = await r.json();
+        const st = (d.benchmark_status||{})[task.front];
+        if(!st || !st.running) done = true;
+      }
+      log.textContent += `[${new Date().toLocaleTimeString('pt-BR')}] ✓ ${task.front} concluído\n`;
+    } catch(e) {
+      log.textContent += `[${new Date().toLocaleTimeString('pt-BR')}] ✗ ${task.front} erro: ${e.message}\n`;
+    }
+    log.scrollTop = log.scrollHeight;
+  }
+  log.textContent += `[${new Date().toLocaleTimeString('pt-BR')}] Todos os benchmarks concluídos!\n`;
+  toast('Benchmarks completos!');
+}
+
+/* Inference */
+async function switchModelInf() {
+  const model = document.getElementById('inf-model').value;
+  toast('Trocando modelo para '+model+'...');
+  try {
+    const r = await fetch('/api/switch-model', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({model})
+    });
+    const d = await r.json();
+    if(d.error) throw new Error(d.error);
+    toast('Modelo trocado!');
+  } catch(e) { toast('Erro: '+e.message); }
+}
+
+async function doInference() {
+  const prompt = document.getElementById('inf-prompt').value;
+  const maxTokens = parseInt(document.getElementById('inf-tokens').value);
+  const btn = document.getElementById('btn-inf');
+  const out = document.getElementById('inf-output');
+  btn.disabled = true;
+  out.textContent = 'Gerando...';
+  const t0 = performance.now();
+  try {
+    const r = await fetch('/api/inference', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({prompt, max_tokens: maxTokens})
+    });
+    const d = await r.json();
+    const elapsed = ((performance.now()-t0)/1000).toFixed(2);
+    document.getElementById('inf-time').textContent = elapsed+'s';
+    if(d.error) { out.textContent = 'Erro: '+d.error; }
+    else {
+      const text = d.response || d.text || '';
+      const tps = d.tokens_per_sec ? d.tokens_per_sec.toFixed(1) : '?';
+      const ttft = d.time_to_first_token_ms ? d.time_to_first_token_ms.toFixed(0) : '?';
+      const tok = d.total_tokens || '?';
+      out.innerHTML = `<div>${text}</div><div style="margin-top:8px;font-size:.75rem;color:var(--dim)">` +
+        `${tps} tokens/s · TTFT: ${ttft}ms · ${tok} tokens · Modelo: ${d.model||'?'}</div>`;
+    }
+  } catch(e) { out.textContent = 'Erro: '+e.message; }
+  btn.disabled = false;
+}
+
+async function doTTS() {
+  const text = document.getElementById('tts-text').value;
+  const btn = document.getElementById('btn-tts');
+  const out = document.getElementById('tts-output');
+  btn.disabled = true;
+  out.innerHTML = '<span style="color:var(--sub)">Sintetizando...</span>';
+  const t0 = performance.now();
+  try {
+    const r = await fetch('/api/tts', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({text})
+    });
+    const d = await r.json();
+    const elapsed = ((performance.now()-t0)/1000).toFixed(2);
+    document.getElementById('tts-time').textContent = elapsed+'s';
+    if(d.error) { out.innerHTML = '<span style="color:var(--red)">Erro: '+d.error+'</span>'; }
+    else if(d.audio_base64) {
+      out.innerHTML = `<audio controls src="data:audio/wav;base64,${d.audio_base64}" style="width:100%"></audio>
+        <div style="font-size:.75rem;color:var(--sub);margin-top:4px">Duração: ${d.duration_s?.toFixed(2)||'?'}s | Tempo: ${elapsed}s</div>`;
+    } else {
+      out.innerHTML = '<span style="color:var(--sub)">Sem áudio retornado</span>';
+    }
+  } catch(e) { out.innerHTML = '<span style="color:var(--red)">Erro: '+e.message+'</span>'; }
+  btn.disabled = false;
+}
+
+function clearVisionOverlay() {
+  const overlay = document.getElementById('inf-vision-overlay');
+  if(overlay) overlay.innerHTML = '';
+}
+
+function previewVisionFile() {
+  const input = document.getElementById('inf-vision-file');
+  const img = document.getElementById('inf-vision-preview');
+  const empty = document.getElementById('inf-vision-empty');
+  const out = document.getElementById('inf-vision-output');
+  clearVisionOverlay();
+  if(out) out.innerHTML = '<span style="color:var(--sub)">Envie a imagem para ver as detecções.</span>';
+  const file = input?.files?.[0];
+  if(!file) {
+    visionPreviewMeta = {width:0,height:0};
+    if(img) { img.style.display = 'none'; img.removeAttribute('src'); }
+    if(empty) empty.style.display = 'block';
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    img.onload = () => {
+      visionPreviewMeta = {width: img.naturalWidth || 0, height: img.naturalHeight || 0};
+    };
+    img.src = reader.result;
+    img.style.display = 'block';
+    if(empty) empty.style.display = 'none';
+  };
+  reader.readAsDataURL(file);
+}
+
+function renderVisionDetections(detections) {
+  clearVisionOverlay();
+  const overlay = document.getElementById('inf-vision-overlay');
+  const img = document.getElementById('inf-vision-preview');
+  if(!overlay || !img || !detections?.length || !visionPreviewMeta.width || !visionPreviewMeta.height) return;
+  overlay.innerHTML = detections.map(det => {
+    const [x1, y1, x2, y2] = det.bbox || [0,0,0,0];
+    const left = Math.max(0, (x1 / visionPreviewMeta.width) * 100);
+    const top = Math.max(0, (y1 / visionPreviewMeta.height) * 100);
+    const width = Math.max(0, ((x2 - x1) / visionPreviewMeta.width) * 100);
+    const height = Math.max(0, ((y2 - y1) / visionPreviewMeta.height) * 100);
+    const label = `${det.class_name || 'obj'} ${(det.confidence != null ? (det.confidence * 100).toFixed(1) : '?')}%`;
+    return `<div class="vision-box" style="left:${left}%;top:${top}%;width:${width}%;height:${height}%"><span>${escapeHtml(label)}</span></div>`;
+  }).join('');
+}
+
+async function doVisionInference() {
+  const input = document.getElementById('inf-vision-file');
+  const file = input?.files?.[0];
+  const out = document.getElementById('inf-vision-output');
+  const btn = document.getElementById('btn-inf-vision');
+  const model = document.getElementById('inf-vision-model').value;
+  if(!file) {
+    toast('Selecione uma imagem primeiro');
+    return;
+  }
+  btn.disabled = true;
+  out.innerHTML = '<span style="color:var(--sub)">Executando detecção...</span>';
+  clearVisionOverlay();
+  const t0 = performance.now();
+  try {
+    const dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error('Falha ao ler a imagem'));
+      reader.readAsDataURL(file);
+    });
+    const imageBase64 = String(dataUrl).split(',')[1] || '';
+    const r = await fetch('/api/vision-infer', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        model,
+        filename: file.name,
+        content_type: file.type || 'application/octet-stream',
+        image_base64: imageBase64,
+      })
+    });
+    const d = await r.json();
+    const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
+    document.getElementById('inf-vision-time').textContent = elapsed + 's';
+    if(d.error) throw new Error(d.error);
+    renderVisionDetections(d.detections || []);
+    const rows = (d.detections || []).map(det => {
+      const bbox = (det.bbox || []).map(v => Number(v).toFixed(1)).join(', ');
+      return `<tr><td>${escapeHtml(det.class_name || 'obj')}</td><td>${det.confidence != null ? (det.confidence * 100).toFixed(1)+'%' : '—'}</td><td style="color:var(--sub)">${escapeHtml(bbox || '—')}</td></tr>`;
+    }).join('');
+    out.innerHTML = `
+      <div style="margin-bottom:8px"><b>${d.count ?? 0}</b> detecções · modelo <b>${escapeHtml(d.model || '?')}</b> · dispositivo <b>${escapeHtml(d.device || '?')}</b></div>
+      ${rows ? `<table><tr><th>Classe</th><th>Confiança</th><th>BBox</th></tr>${rows}</table>` :
+        '<span style="color:var(--sub)">Nenhum objeto detectado nesta imagem.</span>'}
+    `;
+  } catch(e) {
+    out.innerHTML = '<span style="color:var(--red)">Erro: ' + escapeHtml(e.message) + '</span>';
+  }
+  btn.disabled = false;
+}
+
+/* Results */
+async function loadResultsFromServer(options = {}) {
+  const showLoading = options.showLoading !== false;
+  const filterEl = document.getElementById('res-filter');
+  const filter = filterEl ? filterEl.value : 'all';
+  const body = document.getElementById('res-body');
+  const countEl = document.getElementById('res-count');
+  if(!body) return;
+  if(showLoading && !body.innerHTML.trim()) {
+    body.innerHTML = '<div style="color:#737373;padding:16px;text-align:center;font-size:.82rem">Carregando...</div>';
+  }
+  try {
+    const r = await fetch('/api/results-html?front=' + filter);
+    const d = await r.json();
+    body.innerHTML = d.html || '';
+    lastResultsRenderKey = options.renderKey || getResultsRenderKey(filter);
+    if(countEl) {
+      const shown = (d.html.match(/display:flex/g)||[]).length;
+      countEl.textContent = `(${d.total} total · ${shown} exibidos)`;
+    }
+    // Update charts from allResults if available
+    const data = getFilteredResults(filter);
+    if(data.length) {
+      try { renderThroughputChart(data); } catch(e) {}
+      try { renderLatencyChart(data); } catch(e) {}
+    }
+  } catch(e) {
+    body.innerHTML = '<div style="color:#ef4444;padding:16px;font-size:.82rem">Erro ao carregar resultados: ' + e.message + '</div>';
+  }
+}
+
+function renderResultsTable() { loadResultsFromServer({showLoading:false}); }
+function renderResults() { loadResultsFromServer({showLoading:false}); }
+
+function fmtMs(v) { return v != null ? v.toFixed(1) : '—'; }
+
+function renderThroughputChart(data) {
+  const canvas = document.getElementById('chart-throughput');
+  const labels = data.map(r => (r.model||'?').replace('.gguf','').slice(0,15) + ' (' + (r.profile||'?') + ')');
+  const colors = data.map(r => r.front==='vision'?'#0f766e':r.front==='slm'?'#22c55e':'#eab308');
+  const values = data.map(r=>r.throughput_ops||0);
+  if(chartThroughput) {
+    chartThroughput.data.labels = labels;
+    chartThroughput.data.datasets[0].data = values;
+    chartThroughput.data.datasets[0].backgroundColor = colors;
+    chartThroughput.update('none');
+  } else {
+    chartThroughput = new Chart(canvas, {
+      type:'bar',
+      data:{labels, datasets:[{label:'ops/s', data:values, backgroundColor:colors, borderRadius:4}]},
+      options:{responsive:true,maintainAspectRatio:true,animation:false,
+        scales:{y:{ticks:{color:'#737373'},grid:{color:'#2a2a2a'}},x:{ticks:{color:'#737373',font:{size:8},maxRotation:45}}},
+        plugins:{legend:{display:false}}}
+    });
+  }
+}
+
+function renderLatencyChart(data) {
+  const canvas = document.getElementById('chart-latency');
+  const labels = data.map(r => (r.model||'?').replace('.gguf','').slice(0,15));
+  const p50 = data.map(r=>r.p50_ms||0), p95 = data.map(r=>r.p95_ms||0), p99 = data.map(r=>r.p99_ms||0);
+  if(chartLatency) {
+    chartLatency.data.labels = labels;
+    chartLatency.data.datasets[0].data = p50;
+    chartLatency.data.datasets[1].data = p95;
+    chartLatency.data.datasets[2].data = p99;
+    chartLatency.update('none');
+  } else {
+    chartLatency = new Chart(canvas, {
+      type:'bar',
+      data:{labels, datasets:[
+        {label:'p50', data:p50, backgroundColor:'#0f766e', borderRadius:3},
+        {label:'p95', data:p95, backgroundColor:'#0891b2', borderRadius:3},
+        {label:'p99', data:p99, backgroundColor:'#ef4444', borderRadius:3},
+      ]},
+      options:{responsive:true,maintainAspectRatio:true,animation:false,
+        scales:{y:{ticks:{color:'#737373'},grid:{color:'#2a2a2a'},title:{display:true,text:'ms',color:'#737373'}},
+                x:{ticks:{color:'#737373',font:{size:8},maxRotation:45}}},
+        plugins:{legend:{labels:{color:'#a3a3a3',font:{size:9},boxWidth:8}}}}
+    });
+  }
+}
+
+/* Compare */
+function populateCompareSelects() {
+  const slmResults = allResults.filter(r => r.front === 'slm');
+  const html = slmResults.map((r,i) => {
+    const m = (r.model||'?').replace('.gguf','').slice(0,25);
+    const t = r.timestamp ? new Date(r.timestamp).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '';
+    return `<option value="${i}">${m} — ${r.profile||'?'} — ${t}</option>`;
+  }).join('');
+  document.getElementById('cmp-a').innerHTML = html;
+  document.getElementById('cmp-b').innerHTML = html;
+  if(slmResults.length > 1) document.getElementById('cmp-b').selectedIndex = 1;
+}
+
+function doCompare() {
+  const slmResults = allResults.filter(r => r.front === 'slm');
+  const ia = parseInt(document.getElementById('cmp-a').value);
+  const ib = parseInt(document.getElementById('cmp-b').value);
+  if(isNaN(ia) || isNaN(ib)) return;
+  const a = slmResults[ia], b = slmResults[ib];
+  if(!a || !b) return;
+
+  const metrics = [
+    ['Throughput (ops/s)', a.throughput_ops, b.throughput_ops, true],
+    ['Latência p50 (ms)', a.p50_ms, b.p50_ms, false],
+    ['Latência p95 (ms)', a.p95_ms, b.p95_ms, false],
+    ['Latência p99 (ms)', a.p99_ms, b.p99_ms, false],
+    ['Desvio padrão (ms)', a.std_ms, b.std_ms, false],
+    ['RAM Pico (MB)', a.peak_ram_mb, b.peak_ram_mb, false],
+    ['GPU Pico (%)', a.peak_gpu_util, b.peak_gpu_util, true],
+    ['VRAM Pico (MB)', a.peak_vram_mb, b.peak_vram_mb, false],
+    ['Temperatura Pico (°C)', a.peak_temp_c, b.peak_temp_c, false],
+    ['Energia (J)', a.energy_j, b.energy_j, false],
+  ];
+
+  const nameA = (a.model||'?').replace('.gguf','').slice(0,20);
+  const nameB = (b.model||'?').replace('.gguf','').slice(0,20);
+
+  let html = `<div class="compare-grid">
+    <div class="header">Métrica</div><div class="header">${nameA}</div><div class="header">${nameB}</div>`;
+  for(const [label, va, vb, higherBetter] of metrics) {
+    const fmtA = va != null ? (typeof va === 'number' ? va.toFixed(2) : va) : '—';
+    const fmtB = vb != null ? (typeof vb === 'number' ? vb.toFixed(2) : vb) : '—';
+    let clsA = 'val', clsB = 'val';
+    if(va != null && vb != null) {
+      if(higherBetter) { if(va > vb) clsA='val better'; else if(vb > va) clsB='val better'; }
+      else { if(va < vb) clsA='val better'; else if(vb < va) clsB='val better'; }
+    }
+    html += `<div class="label">${label}</div><div class="${clsA}">${fmtA}</div><div class="${clsB}">${fmtB}</div>`;
+  }
+  html += '</div>';
+  document.getElementById('compare-grid').innerHTML = html;
+
+  // Radar chart
+  const canvas = document.getElementById('chart-compare');
+  if(chartCompare) chartCompare.destroy();
+  const labels = metrics.filter(m => m[1]!=null && m[2]!=null).map(m => m[0].split('(')[0].trim());
+  const normalize = (vals) => {
+    const max = Math.max(...vals.filter(v=>v!=null));
+    return vals.map(v => v!=null ? (v/max*100).toFixed(1) : 0);
+  };
+  const valsA = metrics.filter(m=>m[1]!=null&&m[2]!=null).map(m=>m[1]);
+  const valsB = metrics.filter(m=>m[1]!=null&&m[2]!=null).map(m=>m[2]);
+  const maxVals = valsA.map((v,i) => Math.max(v, valsB[i]));
+  const normA = valsA.map((v,i) => (v/maxVals[i]*100).toFixed(1));
+  const normB = valsB.map((v,i) => (v/maxVals[i]*100).toFixed(1));
+
+  chartCompare = new Chart(canvas, {
+    type:'radar',
+    data:{labels, datasets:[
+      {label:nameA, data:normA, borderColor:'#0f766e', backgroundColor:'#0f766e30', pointRadius:3},
+      {label:nameB, data:normB, borderColor:'#22c55e', backgroundColor:'#22c55e30', pointRadius:3},
+    ]},
+    options:{responsive:true,maintainAspectRatio:true,animation:false,
+      scales:{r:{angleLines:{color:'#303030'},grid:{color:'#303030'},ticks:{display:false},suggestedMin:0,suggestedMax:100}},
+      plugins:{legend:{labels:{color:'#a3a3a3',font:{size:10}}}}}
+  });
+}
+
+/* Export */
+function exportResults() {
+  const blob = new Blob([JSON.stringify(allResults, null, 2)], {type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'pdc-ia-results-'+new Date().toISOString().slice(0,10)+'.json';
+  a.click(); URL.revokeObjectURL(url);
+  toast('Resultados exportados!');
+}
+
+/* Config */
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+async function loadConfig() {
+  try {
+    const r = await fetch('/api/config');
+    const d = await r.json();
+    if(d.raw) { document.getElementById('cfg-yaml').value = d.raw; }
+    else if(d.error) { document.getElementById('cfg-status').textContent = 'Erro: '+d.error; }
+    else {
+      // Convert JSON back to YAML-like display
+      document.getElementById('cfg-yaml').value = JSON.stringify(d, null, 2);
+    }
+  } catch(e) { document.getElementById('cfg-status').textContent = 'Erro: '+e.message; }
+}
+
+async function saveConfig() {
+  const text = document.getElementById('cfg-yaml').value;
+  try {
+    const r = await fetch('/api/config', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({yaml_text: text})
+    });
+    const d = await r.json();
+    if(d.status === 'ok') { toast('Configuração salva!'); document.getElementById('cfg-status').textContent = 'Salvo com sucesso'; }
+    else { document.getElementById('cfg-status').textContent = 'Erro: '+(d.error||'?'); }
+  } catch(e) { document.getElementById('cfg-status').textContent = 'Erro: '+e.message; }
+}
+
+function onModelTargetChange() {
+  const target = document.getElementById('model-target').value;
+  const sourceLabel = document.getElementById('model-source-label');
+  const source = document.getElementById('model-source');
+  const sourceHint = document.getElementById('model-source-hint');
+  const extraWrap = document.getElementById('model-source-extra-wrap');
+  const extraLabel = document.getElementById('model-source-extra-label');
+  const extraField = document.getElementById('model-source-extra');
+  const extraHint = document.getElementById('model-source-extra-hint');
+  const targetMeta = {
+    vision: {
+      label: 'Link do arquivo do modelo',
+      placeholder: 'https://.../yolo11n.pt',
+      hint: 'Aceita link direto do arquivo. Links do Hugging Face com /blob/ também são convertidos.',
+      extra: false,
+    },
+    slm: {
+      label: 'Link GGUF ou página do arquivo',
+      placeholder: 'https://.../Qwen3-4B-Instruct-Q4_K_M.gguf',
+      hint: 'Cole o link do arquivo .gguf. Se vier do Hugging Face com /blob/, a plataforma ajusta para /resolve/.',
+      extra: false,
+    },
+    audio_asr: {
+      label: 'ID do modelo ASR',
+      placeholder: 'small, medium, large-v3',
+      hint: 'Para ASR, use o identificador do faster-whisper. Não é necessário link.',
+      extra: false,
+    },
+    audio_tts: {
+      label: 'Link do arquivo .onnx',
+      placeholder: 'https://.../voz.onnx',
+      hint: 'Cole o link do modelo TTS. O config .json é sugerido automaticamente quando possível.',
+      extra: true,
+      extraLabel: 'Config JSON (opcional)',
+      extraPlaceholder: 'https://.../voz.onnx.json',
+      extraHint: 'Se deixar vazio, a plataforma tenta usar o mesmo link com o sufixo .json.',
+    },
+  }[target];
+
+  if(sourceLabel) sourceLabel.textContent = targetMeta.label;
+  if(source) source.placeholder = targetMeta.placeholder;
+  if(sourceHint) sourceHint.textContent = targetMeta.hint;
+  if(extraWrap) extraWrap.style.display = targetMeta.extra ? 'block' : 'none';
+  if(extraLabel) extraLabel.textContent = targetMeta.extraLabel || 'Link complementar';
+  if(extraField) extraField.placeholder = targetMeta.extraPlaceholder || '';
+  if(extraHint) extraHint.textContent = targetMeta.extraHint || '';
+
+  ['slm','audio_asr','audio_tts'].forEach(name => {
+    const el = document.getElementById('model-fields-' + name);
+    const visible = name === target && target !== 'audio_tts';
+    if(el) el.style.display = visible ? 'block' : 'none';
+  });
+  const gpuBox = document.getElementById('model-gpu-capable');
+  if(gpuBox && target === 'audio_tts') gpuBox.checked = false;
+}
+
+function resetModelForm() {
+  document.getElementById('model-key').value = '';
+  document.getElementById('model-description').value = '';
+  document.getElementById('model-source').value = '';
+  document.getElementById('model-source-extra').value = '';
+  document.getElementById('model-filename').value = '';
+  document.getElementById('model-size-mb').value = '';
+  document.getElementById('model-min-ram').value = '';
+  document.getElementById('model-gpu-capable').checked = true;
+  document.getElementById('model-set-default').checked = false;
+  document.getElementById('model-activate-now').checked = true;
+  document.getElementById('model-slm-chat-format').value = '';
+  document.getElementById('model-slm-gpu-layers').value = '33';
+  document.getElementById('model-slm-context-length').value = '4096';
+  document.getElementById('model-asr-languages').value = '';
+  document.getElementById('model-tts-config-url').value = '';
+  document.getElementById('model-advanced').open = false;
+  document.getElementById('model-form-status').textContent = '';
+  onModelTargetChange();
+}
+
+function editModel(target, key) {
+  const group = modelCatalogData[target] || {};
+  const item = (group.models || []).find(m => m.key === key);
+  if(!item) return;
+  const cfg = item.config || {};
+  document.getElementById('model-target').value = target;
+  onModelTargetChange();
+  document.getElementById('model-key').value = key;
+  document.getElementById('model-description').value = cfg.description || '';
+  document.getElementById('model-source').value = cfg.url || cfg.model_url || cfg.model_id || '';
+  document.getElementById('model-source-extra').value = cfg.config_url || '';
+  document.getElementById('model-filename').value = cfg.filename || '';
+  document.getElementById('model-size-mb').value = cfg.size_mb ?? '';
+  document.getElementById('model-min-ram').value = cfg.min_ram_gb ?? '';
+  document.getElementById('model-gpu-capable').checked = cfg.gpu_capable !== false;
+  document.getElementById('model-set-default').checked = !!item.default;
+  document.getElementById('model-activate-now').checked = true;
+  document.getElementById('model-slm-chat-format').value = cfg.chat_format || '';
+  document.getElementById('model-slm-gpu-layers').value = cfg.gpu_layers ?? 33;
+  document.getElementById('model-slm-context-length').value = cfg.context_length ?? 4096;
+  document.getElementById('model-asr-languages').value = (cfg.languages || []).join(',');
+  document.getElementById('model-tts-config-url').value = cfg.config_url || '';
+  document.getElementById('model-advanced').open = true;
+  document.getElementById('model-form-status').textContent = `Editando ${target} / ${key}`;
+}
+
+function collectModelPayload() {
+  const target = document.getElementById('model-target').value;
+  const payload = {
+    target,
+    key: document.getElementById('model-key').value.trim(),
+    description: document.getElementById('model-description').value.trim(),
+    source: document.getElementById('model-source').value.trim(),
+    source_extra: document.getElementById('model-source-extra').value.trim(),
+    filename: document.getElementById('model-filename').value.trim(),
+    size_mb: document.getElementById('model-size-mb').value.trim(),
+    min_ram_gb: document.getElementById('model-min-ram').value.trim(),
+    gpu_capable: document.getElementById('model-gpu-capable').checked,
+    set_default: document.getElementById('model-set-default').checked,
+    activate_now: document.getElementById('model-activate-now').checked,
+  };
+
+  if(target === 'slm') {
+    payload.chat_format = document.getElementById('model-slm-chat-format').value;
+    payload.gpu_layers = document.getElementById('model-slm-gpu-layers').value.trim();
+    payload.context_length = document.getElementById('model-slm-context-length').value.trim();
+  } else if(target === 'audio_asr') {
+    payload.languages = document.getElementById('model-asr-languages').value.trim();
+  } else if(target === 'audio_tts') {
+    payload.config_url = document.getElementById('model-tts-config-url').value.trim();
+  }
+
+  return payload;
+}
+
+async function saveModel() {
+  const status = document.getElementById('model-form-status');
+  status.textContent = 'Salvando...';
+  const useDefault = document.getElementById('model-set-default').checked;
+  try {
+    const r = await fetch('/api/models/save', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(collectModelPayload())
+    });
+    const d = await r.json();
+    if(d.error) {
+      status.textContent = 'Erro: ' + d.error;
+      return;
+    }
+    const activationMsg = d.activation?.error ? ' | ativação: ' + d.activation.error : '';
+    status.textContent = `Salvo: ${d.target}/${d.key}${activationMsg}`;
+    toast(d.status === 'saved_with_warning' ? 'Modelo salvo com aviso' : 'Modelo salvo');
+    await loadModelCatalog();
+    await loadModels(!useDefault);
+  } catch(e) {
+    status.textContent = 'Erro: ' + e.message;
+  }
+}
+
+async function activateModel(target, key) {
+  try {
+    const r = await fetch('/api/models/activate', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({target, key})
+    });
+    const d = await r.json();
+    if(d.error) throw new Error(d.error);
+    toast('Modelo ativado: ' + key);
+    await loadModels(true);
+    await fetchMetrics();
+  } catch(e) {
+    toast('Erro ao ativar: ' + e.message);
+  }
+}
+
+async function makeDefaultModel(target, key) {
+  try {
+    const r = await fetch('/api/models/default', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({target, key})
+    });
+    const d = await r.json();
+    if(d.error) throw new Error(d.error);
+    toast('Modelo padrão atualizado');
+    await loadModelCatalog();
+    await loadModels(false);
+  } catch(e) {
+    toast('Erro ao atualizar padrão: ' + e.message);
+  }
+}
+
+async function deleteModel(target, key) {
+  if(!confirm(`Remover ${target}/${key}?`)) return;
+  try {
+    const r = await fetch('/api/models/delete', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({target, key})
+    });
+    const d = await r.json();
+    if(d.error) throw new Error(d.error);
+    toast('Modelo removido');
+    await loadModelCatalog();
+    await loadModels(false);
+  } catch(e) {
+    toast('Erro ao remover: ' + e.message);
+  }
+}
+
+function modelSummary(target, cfg) {
+  if(target === 'vision') return `${cfg.format || 'ultralytics'} · ${(cfg.filename || cfg.url || '').split('/').pop()}`;
+  if(target === 'slm') return `${cfg.chat_format || 'tinyllama'} · ctx ${cfg.context_length || '?'} · gpu ${cfg.gpu_layers ?? '?'}`;
+  if(target === 'audio_asr') return `${cfg.model_id || '?'}${cfg.languages?.length ? ' · ' + cfg.languages.join(', ') : ''}`;
+  if(target === 'audio_tts') return (cfg.model_url || '').split('/').pop() || 'piper';
+  return '';
+}
+
+async function loadModelCatalog() {
+  const host = document.getElementById('models-catalog');
+  if(!host) return;
+  host.innerHTML = '<div style="color:var(--sub);font-size:.82rem">Carregando catálogo...</div>';
+  try {
+    const r = await fetch('/api/models/catalog');
+    const d = await r.json();
+    modelCatalogData = d || {};
+    const labels = {
+      vision: 'Vision',
+      slm: 'SLM',
+      audio_asr: 'Audio ASR',
+      audio_tts: 'Audio TTS',
+    };
+    host.innerHTML = ['vision','slm','audio_asr','audio_tts'].map(target => {
+      const group = d[target] || {models:[]};
+      const rows = (group.models || []).map(item => {
+        const cfg = item.config || {};
+        const badge = item.default ? '<span class="badge b-ok">Padrão</span>' : '';
+        return `
+          <tr>
+            <td style="font-weight:600">${escapeHtml(item.key)} ${badge}</td>
+            <td style="color:var(--sub)">${escapeHtml(cfg.description || '—')}</td>
+            <td style="color:var(--sub)">${escapeHtml(modelSummary(target, cfg) || '—')}</td>
+            <td>
+              <div style="display:flex;gap:6px;flex-wrap:wrap">
+                <button class="btn sm" onclick="editModel('${target}','${escapeHtml(item.key)}')">Editar</button>
+                <button class="btn sm" onclick="activateModel('${target}','${escapeHtml(item.key)}')">Ativar</button>
+                <button class="btn sm" onclick="makeDefaultModel('${target}','${escapeHtml(item.key)}')">Padrão</button>
+                <button class="btn sm danger" onclick="deleteModel('${target}','${escapeHtml(item.key)}')">Remover</button>
+              </div>
+            </td>
+          </tr>`;
+      }).join('');
+      return `
+        <div style="border:1px solid var(--border);border-radius:8px;overflow:hidden">
+          <div style="padding:10px 12px;background:var(--card2);font-size:.76rem;color:var(--dim);text-transform:uppercase;letter-spacing:.06em">${labels[target]}</div>
+          ${rows ? `<table><tr><th>Chave</th><th>Descrição</th><th>Resumo</th><th>Ações</th></tr>${rows}</table>` :
+            '<div style="padding:12px;color:var(--sub);font-size:.8rem">Sem modelos cadastrados.</div>'}
+        </div>`;
+    }).join('');
+    const containers = metrics.containers || {};
+    if(containers.slm?.model) syncSelectWithRuntime('inf-model', 'slm', containers.slm.model);
+    if(containers.vision?.model) syncSelectWithRuntime('inf-vision-model', 'vision', containers.vision.model);
+  } catch(e) {
+    host.innerHTML = '<div style="color:var(--red);font-size:.82rem">Erro: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+async function loadModels(preserveSelection=true) {
+  try {
+    const r = await fetch('/api/models');
+    const d = await r.json();
+    populateModelSelect('bench-vision-model', d.vision || [], preserveSelection);
+    populateModelSelect('bench-slm-model', d.slm || [], preserveSelection);
+    populateModelSelect('bench-audio-asr-model', d.audio_asr || [], preserveSelection);
+    populateModelSelect('bench-audio-tts-model', d.audio_tts || [], preserveSelection);
+    populateModelSelect('inf-model', d.slm || [], preserveSelection);
+    populateModelSelect('inf-vision-model', d.vision || [], preserveSelection);
+  } catch(e) { console.warn('loadModels:', e); }
+}
+
+function populateModelSelect(id, models, preserveSelection=true) {
+  const sel = document.getElementById(id);
+  if(!sel) return;
+  if(!models.length) {
+    sel.innerHTML = '<option value="">Sem modelos</option>';
+    return;
+  }
+  const current = preserveSelection && models.some(m => m.key === sel.value) ? sel.value : '';
+  sel.innerHTML = models.map(m =>
+    `<option value="${escapeHtml(m.key)}"${m.default && !current ? ' selected' : ''}>${escapeHtml(m.description ? `${m.key} — ${m.description}` : m.key)}</option>`
+  ).join('');
+  if(current && models.some(m => m.key === current)) sel.value = current;
+}
+
+/* Init */
+fetchMetrics();
+setInterval(fetchMetrics, 3000);
+loadConfig();
+loadModels(false);
+loadModelCatalog();
+resetModelForm();
+setTimeout(fetchMetrics, 1500);
+</script>
+</body>
+</html>

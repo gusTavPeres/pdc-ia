@@ -31,8 +31,19 @@ from shared.capabilities import CapabilityDetector
 import asyncio
 from functools import partial
 from shared.benchmark_suite import run_full_benchmark
-from app.inference_asr import load_asr, transcribe, get_asr_device, is_asr_loaded
-from app.inference_tts import load_tts, synthesize, is_tts_loaded
+from app.inference_asr import (
+    load_asr,
+    transcribe,
+    get_asr_device,
+    get_asr_model_name,
+    is_asr_loaded,
+)
+from app.inference_tts import (
+    load_tts,
+    synthesize,
+    get_tts_model_name,
+    is_tts_loaded,
+)
 
 
 # ─── Modelos de request ───
@@ -46,6 +57,11 @@ class BenchmarkRequest(BaseModel):
     mode: str = "pipeline"  # "asr", "tts", or "pipeline"
 
 
+class SwitchModelRequest(BaseModel):
+    target: str  # "asr" or "tts"
+    model: str
+
+
 # ─── Variáveis globais ───
 
 _capabilities = {}
@@ -53,6 +69,17 @@ _models_config = {}
 _benchmark_config = {}
 _datasets_config = {}
 _last_benchmark_result = None
+
+
+def _reload_runtime_config():
+    global _models_config, _benchmark_config, _datasets_config
+
+    with open("/app/config/models.yaml") as f:
+        _models_config = yaml.safe_load(f) or {}
+    with open("/app/config/benchmark.yaml") as f:
+        _benchmark_config = yaml.safe_load(f) or {}
+    with open("/app/config/datasets.yaml") as f:
+        _datasets_config = yaml.safe_load(f) or {}
 
 
 # ─── Startup ───
@@ -71,12 +98,7 @@ async def lifespan(app: FastAPI):
         _capabilities = {}
 
     try:
-        with open("/app/config/models.yaml") as f:
-            _models_config = yaml.safe_load(f)
-        with open("/app/config/benchmark.yaml") as f:
-            _benchmark_config = yaml.safe_load(f)
-        with open("/app/config/datasets.yaml") as f:
-            _datasets_config = yaml.safe_load(f)
+        _reload_runtime_config()
     except Exception as e:
         print(f"[audio] Aviso: erro ao ler config: {e}")
 
@@ -122,8 +144,8 @@ async def health():
     return {
         "status": "ok" if asr_ok else "degraded",
         "front": "audio",
-        "asr": "whisper" if asr_ok else "não carregado",
-        "tts": "piper" if is_tts_loaded() else "fallback",
+        "asr": get_asr_model_name() if asr_ok else "não carregado",
+        "tts": get_tts_model_name() if is_tts_loaded() else "fallback",
         "device": get_asr_device(),
         "gpu": get_asr_device() == "cuda",
     }
@@ -131,13 +153,71 @@ async def health():
 
 @app.get("/info")
 async def info():
+    try:
+        _reload_runtime_config()
+    except Exception:
+        pass
     return {
         "model": {
-            "asr": "faster-whisper",
-            "tts": "piper-tts",
+            "asr_engine": "faster-whisper",
+            "asr_model": get_asr_model_name(),
+            "tts_engine": "piper-tts",
+            "tts_model": get_tts_model_name(),
             "device": get_asr_device(),
         },
+        "available_models": {
+            "asr": list(_models_config.get("audio", {}).get("asr", {}).get("models", {}).keys()),
+            "tts": list(_models_config.get("audio", {}).get("tts", {}).get("models", {}).keys()),
+        },
         "system": _capabilities,
+    }
+
+
+@app.post("/switch-model")
+async def switch_model(request: SwitchModelRequest):
+    try:
+        _reload_runtime_config()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Falha ao recarregar config: {e}")
+
+    audio_cfg = _models_config.get("audio", {})
+    if request.target == "asr":
+        section = audio_cfg.get("asr", {})
+        model_cfg = section.get("models", {}).get(request.model)
+        if not model_cfg:
+            available = list(section.get("models", {}).keys())
+            raise HTTPException(
+                status_code=404,
+                detail=f"Modelo ASR '{request.model}' não encontrado. Disponíveis: {available}"
+            )
+        try:
+            load_asr(model_cfg)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+    elif request.target == "tts":
+        section = audio_cfg.get("tts", {})
+        model_cfg = section.get("models", {}).get(request.model)
+        if not model_cfg:
+            available = list(section.get("models", {}).keys())
+            raise HTTPException(
+                status_code=404,
+                detail=f"Modelo TTS '{request.model}' não encontrado. Disponíveis: {available}"
+            )
+        try:
+            load_tts(model_cfg)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+    else:
+        raise HTTPException(status_code=400, detail="target deve ser 'asr' ou 'tts'")
+
+    return {
+        "status": "ok",
+        "target": request.target,
+        "loaded": {
+            "asr": get_asr_model_name(),
+            "tts": get_tts_model_name(),
+            "device": get_asr_device(),
+        },
     }
 
 
@@ -190,6 +270,11 @@ async def benchmark_endpoint(request: BenchmarkRequest):
     global _last_benchmark_result
 
     mode = request.mode
+
+    try:
+        _reload_runtime_config()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Falha ao recarregar config: {e}")
 
     profiles = _benchmark_config.get("profiles", {})
     profile = profiles.get(request.profile, profiles.get("quick", {}))
@@ -257,7 +342,18 @@ async def benchmark_endpoint(request: BenchmarkRequest):
     try:
         loop = asyncio.get_event_loop()
         bench_result = await loop.run_in_executor(
-            None, partial(run_full_benchmark, bench_fn, profile, _capabilities)
+            None,
+            partial(
+                run_full_benchmark,
+                bench_fn,
+                profile,
+                _capabilities,
+                profile_name=request.profile,
+                front="audio",
+                model={"asr": get_asr_model_name(), "tts": get_tts_model_name()},
+                mode=mode,
+                dataset=_datasets_config.get("audio", {}).get("asr", {}).get("default", "self_generated"),
+            ),
         )
     except Exception as e:
         bench_result = {"error": str(e)}
@@ -267,8 +363,15 @@ async def benchmark_endpoint(request: BenchmarkRequest):
         "profile": request.profile,
         "mode": mode,
         "front": "audio",
+        "model": {
+            "asr": get_asr_model_name(),
+            "tts": get_tts_model_name(),
+        },
         "pipeline_results": pipeline_results,
         "benchmark_results": bench_result.get("benchmark_results", {}),
+        "methodology": bench_result.get("methodology", {}),
+        "metadata": bench_result.get("metadata", {}),
+        "scorecard": bench_result.get("scorecard", {}),
         "system_info": _capabilities,
     }
 

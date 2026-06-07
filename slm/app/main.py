@@ -48,6 +48,17 @@ _datasets_config = {}
 _last_benchmark_result = None
 
 
+def _reload_runtime_config():
+    global _models_config, _benchmark_config, _datasets_config
+
+    with open("/app/config/models.yaml") as f:
+        _models_config = yaml.safe_load(f) or {}
+    with open("/app/config/benchmark.yaml") as f:
+        _benchmark_config = yaml.safe_load(f) or {}
+    with open("/app/config/datasets.yaml") as f:
+        _datasets_config = yaml.safe_load(f) or {}
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _capabilities, _models_config, _benchmark_config, _datasets_config
@@ -60,12 +71,7 @@ async def lifespan(app: FastAPI):
         _capabilities = {}
 
     try:
-        with open("/app/config/models.yaml") as f:
-            _models_config = yaml.safe_load(f)
-        with open("/app/config/benchmark.yaml") as f:
-            _benchmark_config = yaml.safe_load(f)
-        with open("/app/config/datasets.yaml") as f:
-            _datasets_config = yaml.safe_load(f)
+        _reload_runtime_config()
     except Exception as e:
         print(f"[slm] Erro ao ler config: {e}")
 
@@ -100,6 +106,10 @@ async def health():
 
 @app.get("/info")
 async def info():
+    try:
+        _reload_runtime_config()
+    except Exception:
+        pass
     return {
         "model": get_loaded_config(),
         "available_models": list(_models_config.get("slm", {}).get("models", {}).keys()),
@@ -129,6 +139,11 @@ async def switch_model(request: SwitchModelRequest):
     Retorna:
         Info do modelo carregado após a troca.
     """
+    try:
+        _reload_runtime_config()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Falha ao recarregar config: {e}")
+
     slm_cfg = _models_config.get("slm", {})
     model_cfg = slm_cfg.get("models", {}).get(request.model)
 
@@ -155,6 +170,11 @@ async def benchmark(request: BenchmarkRequest):
     """Executa benchmark com o modelo atualmente carregado."""
     global _last_benchmark_result
 
+    try:
+        _reload_runtime_config()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Falha ao recarregar config: {e}")
+
     profiles = _benchmark_config.get("profiles", {})
     profile = profiles.get(request.profile, profiles.get("quick", {}))
     if not profile:
@@ -163,7 +183,20 @@ async def benchmark(request: BenchmarkRequest):
     try:
         loop = asyncio.get_event_loop()
         fn = get_benchmark_fn()
-        result = await loop.run_in_executor(None, partial(run_full_benchmark, fn, profile, _capabilities))
+        dataset_name = _datasets_config.get("slm", {}).get("default", "prompts_pt_20")
+        result = await loop.run_in_executor(
+            None,
+            partial(
+                run_full_benchmark,
+                fn,
+                profile,
+                _capabilities,
+                profile_name=request.profile,
+                front="slm",
+                model=get_model_name(),
+                dataset=dataset_name,
+            ),
+        )
         result["profile"] = request.profile
         result["front"] = "slm"
         result["model"] = get_model_name()

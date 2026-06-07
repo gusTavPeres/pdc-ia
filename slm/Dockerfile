@@ -20,7 +20,7 @@ ENV CUDACXX=/usr/local/cuda/bin/nvcc
 ENV FORCE_CMAKE=1
 ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64/stubs:/usr/local/cuda/lib64:$LD_LIBRARY_PATH
 ENV LIBRARY_PATH=/usr/local/cuda/lib64/stubs:/usr/local/cuda/lib64:$LIBRARY_PATH
-RUN pip install --no-cache-dir 'llama-cpp-python==0.2.90' --no-binary llama-cpp-python
+RUN pip install --no-cache-dir 'llama-cpp-python==0.3.21' --no-binary llama-cpp-python
 
 # Remove stub symlink so runtime uses real libcuda from nvidia driver
 RUN rm -f /usr/local/cuda/lib64/stubs/libcuda.so.1

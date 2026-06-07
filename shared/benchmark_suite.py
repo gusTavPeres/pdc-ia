@@ -14,6 +14,15 @@ import random
 import statistics
 from typing import Callable, List, Optional
 
+from shared.methodology import (
+    base_methodology,
+    benchmark_metadata,
+    result_quality,
+    summarize_errors,
+    summarize_numeric_result_fields,
+)
+from shared.scorecard import compute_scorecard, load_hardware_config
+
 try:
     import psutil
     _PSUTIL = True
@@ -44,6 +53,7 @@ def _collect_system_metrics() -> dict:
         "gpu_pct": None,
         "gpu_mem_mb": None,
         "temp_c": None,
+        "power_w": None,
     }
 
     if _PSUTIL:
@@ -66,6 +76,10 @@ def _collect_system_metrics() -> dict:
             # Temperatura GPU
             temp = pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
             metrics["temp_c"] = temp
+            try:
+                metrics["power_w"] = round(pynvml.nvmlDeviceGetPowerUsage(handle) / 1000.0, 3)
+            except Exception:
+                pass
             pynvml.nvmlShutdown()
         except Exception:
             try:
@@ -116,31 +130,50 @@ def run_throughput(inference_fn: Callable, duration_sec: int = 60, warmup: int =
             duration_sec: duração real medida (float)
     """
     # Fase de aquecimento: roda inference_fn sem medir
+    warmup_errors = []
     for _ in range(warmup):
         try:
             inference_fn()
-        except Exception:
-            pass
+        except Exception as e:
+            warmup_errors.append(f"{type(e).__name__}: {e}")
 
     # Fase de medição
     ops_total = 0
+    error_count = 0
+    errors = []
+    result_samples = []
     start_time = time.perf_counter()
     end_time = start_time + duration_sec
 
     while time.perf_counter() < end_time:
         try:
-            inference_fn()
+            result = inference_fn()
             ops_total += 1
-        except Exception:
-            pass
+            if isinstance(result, dict):
+                result_samples.append(result)
+        except Exception as e:
+            error_count += 1
+            if len(errors) < 20:
+                errors.append(f"{type(e).__name__}: {e}")
 
     actual_duration = time.perf_counter() - start_time
     ops_per_sec = ops_total / actual_duration if actual_duration > 0 else 0
 
+    quality = result_quality(ops_total, error_count)
     return {
         "ops_per_sec": round(ops_per_sec, 3),
         "ops_total": ops_total,
         "duration_sec": round(actual_duration, 2),
+        "warmup": {
+            "attempts": warmup,
+            "error_count": len(warmup_errors),
+            "errors": summarize_errors(warmup_errors),
+        },
+        "error_count": error_count,
+        "error_rate": quality["error_rate"],
+        "quality": quality,
+        "errors": summarize_errors(errors),
+        "result_metrics": summarize_numeric_result_fields(result_samples),
     }
 
 
@@ -164,15 +197,22 @@ def run_latency(inference_fn: Callable, samples: int = 50,
         percentiles = [50, 95, 99]
 
     latencies_ms = []
+    error_count = 0
+    errors = []
+    result_samples = []
 
     for i in range(samples):
         try:
             t0 = time.perf_counter()
-            inference_fn()
+            result = inference_fn()
             elapsed_ms = (time.perf_counter() - t0) * 1000
             latencies_ms.append(elapsed_ms)
-        except Exception:
-            pass
+            if isinstance(result, dict):
+                result_samples.append(result)
+        except Exception as e:
+            error_count += 1
+            if len(errors) < 20:
+                errors.append(f"{type(e).__name__}: {e}")
 
     if not latencies_ms:
         return {"error": "Nenhuma amostra coletada"}
@@ -196,6 +236,12 @@ def run_latency(inference_fn: Callable, samples: int = 50,
     result["mean_ms"] = round(statistics.mean(latencies_ms), 2)
     result["std_ms"] = round(statistics.stdev(latencies_ms) if len(latencies_ms) > 1 else 0, 2)
     result["samples_collected"] = len(latencies_ms)
+    result["samples_requested"] = samples
+    result["error_count"] = error_count
+    result["error_rate"] = round(error_count / samples, 4) if samples else 0
+    result["quality"] = result_quality(len(latencies_ms), error_count)
+    result["errors"] = summarize_errors(errors)
+    result["result_metrics"] = summarize_numeric_result_fields(result_samples)
 
     return result
 
@@ -223,14 +269,19 @@ def run_resource_usage(inference_fn: Callable, duration_sec: int = 120,
     # Dados compartilhados entre threads
     timeseries = []
     stop_event = threading.Event()
+    worker_errors = []
+    worker_success = 0
 
     def inference_worker():
         """Thread que roda inferência continuamente."""
+        nonlocal worker_success
         while not stop_event.is_set():
             try:
                 inference_fn()
-            except Exception:
-                pass
+                worker_success += 1
+            except Exception as e:
+                if len(worker_errors) < 20:
+                    worker_errors.append(f"{type(e).__name__}: {e}")
 
     def metrics_worker():
         """Thread que coleta métricas periodicamente."""
@@ -259,13 +310,27 @@ def run_resource_usage(inference_fn: Callable, duration_sec: int = 120,
     ram_values = [s["ram_mb"] for s in timeseries if s.get("ram_mb") is not None]
     cpu_values = [s["cpu_pct"] for s in timeseries if s.get("cpu_pct") is not None]
     temp_values = [s["temp_c"] for s in timeseries if s.get("temp_c") is not None]
+    gpu_values = [s["gpu_pct"] for s in timeseries if s.get("gpu_pct") is not None]
+    vram_values = [s["gpu_mem_mb"] for s in timeseries if s.get("gpu_mem_mb") is not None]
+    power_values = [s["power_w"] for s in timeseries if s.get("power_w") is not None]
+    total_energy_j = None
+    if power_values:
+        total_energy_j = statistics.mean(power_values) * duration_sec
 
     return {
         "timeseries": timeseries,
         "peak_ram_mb": round(max(ram_values), 1) if ram_values else None,
         "avg_cpu_pct": round(statistics.mean(cpu_values), 1) if cpu_values else None,
+        "peak_gpu_util": round(max(gpu_values), 1) if gpu_values else None,
+        "peak_vram_mb": round(max(vram_values), 1) if vram_values else None,
         "peak_temp_c": round(max(temp_values), 1) if temp_values else None,
+        "avg_power_w": round(statistics.mean(power_values), 3) if power_values else None,
+        "peak_power_w": round(max(power_values), 3) if power_values else None,
+        "total_energy_j": round(total_energy_j, 3) if total_energy_j is not None else None,
         "samples_collected": len(timeseries),
+        "inference_success_count": worker_success,
+        "inference_error_count": len(worker_errors),
+        "errors": summarize_errors(worker_errors),
     }
 
 
@@ -292,6 +357,8 @@ def run_sustained_load(inference_fn: Callable, duration_min: int = 10) -> dict:
     temp_max_c = None
     stop_event = threading.Event()
     temps = []
+    total_ops = 0
+    total_errors = 0
 
     def temp_monitor():
         """Coleta temperatura em background."""
@@ -315,11 +382,12 @@ def run_sustained_load(inference_fn: Callable, duration_min: int = 10) -> dict:
                 inference_fn()
                 ops += 1
             except Exception:
-                pass
+                total_errors += 1
 
         actual_time = time.perf_counter() - minute_start
         tps = ops / actual_time if actual_time > 0 else 0
         throughput_per_minute.append(round(tps, 3))
+        total_ops += ops
 
     stop_event.set()
     t_temp.join(timeout=5)
@@ -341,6 +409,7 @@ def run_sustained_load(inference_fn: Callable, duration_min: int = 10) -> dict:
         "degradation_pct": degradation_pct,
         "throttling_detected": throttling_detected,
         "temp_max_c": temp_max_c,
+        "quality": result_quality(total_ops, total_errors),
     }
 
 
@@ -431,7 +500,10 @@ def run_memory_bandwidth(patterns: List[str] = None,
 
 
 def run_full_benchmark(inference_fn: Callable, profile_config: dict,
-                       capabilities: dict) -> dict:
+                       capabilities: dict, profile_name: Optional[str] = None,
+                       front: Optional[str] = None, model: Optional[str] = None,
+                       mode: Optional[str] = None, dataset: Optional[str] = None,
+                       hardware_config: Optional[dict] = None) -> dict:
     """
     Orquestra todos os benchmarks habilitados no perfil de configuração.
 
@@ -451,6 +523,8 @@ def run_full_benchmark(inference_fn: Callable, profile_config: dict,
     results = {
         "timestamp": datetime.datetime.now().isoformat(),
         "system_info": capabilities,
+        "methodology": base_methodology(profile_name, profile_config),
+        "metadata": benchmark_metadata(front, model, mode, dataset),
         "benchmark_results": {},
     }
 
@@ -507,5 +581,20 @@ def run_full_benchmark(inference_fn: Callable, profile_config: dict,
             )
         except Exception as e:
             results["benchmark_results"]["memory_bandwidth"] = {"error": str(e)}
+
+    if front and not results.get("front"):
+        results["front"] = front
+    if model is not None and not results.get("model"):
+        results["model"] = model
+    if mode is not None and not results.get("mode"):
+        results["mode"] = mode
+    if profile_name is not None and not results.get("profile"):
+        results["profile"] = profile_name
+
+    try:
+        cfg = hardware_config if hardware_config is not None else load_hardware_config()
+        results["scorecard"] = compute_scorecard(results, cfg)
+    except Exception as e:
+        results["scorecard"] = {"error": str(e)}
 
     return results

@@ -135,3 +135,10 @@ def _generate_silence_wav(sample_rate: int = 22050, duration_sec: float = 1.5) -
 def is_tts_loaded() -> bool:
     """Verifica se TTS está carregado."""
     return _tts_voice is not None
+
+
+def get_tts_model_name() -> str:
+    """Retorna o nome do arquivo do modelo TTS carregado."""
+    if _tts_model_path:
+        return os.path.basename(_tts_model_path)
+    return "não carregado"
