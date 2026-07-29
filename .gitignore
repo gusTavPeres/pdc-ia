@@ -1,6 +1,8 @@
 # Data e modelos
 data/models/
 data/datasets/
+data/hardware/
+data/ultralytics/
 *.gguf
 *.pt
 *.onnx
@@ -13,6 +15,10 @@ results/
 __pycache__/
 *.pyc
 *.pyo
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 .venv/
 .venv-test/
 venv/

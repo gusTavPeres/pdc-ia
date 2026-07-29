@@ -1,5 +1,9 @@
 services:
   pdc-vision:
+    image: pdc-vision:${PDC_IMAGE_VARIANT:-gpu}
+    build:
+      args:
+        TORCH_INDEX_URL: https://download.pytorch.org/whl/cu128
     gpus: all
     environment:
       - PDC_GPU_MODE=auto

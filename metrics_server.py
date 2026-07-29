@@ -1,27 +1,56 @@
 #!/usr/bin/env python3
 """Servidor local do dashboard e API de controle."""
-import json, subprocess, os, glob, time, threading, traceback, io, base64, struct, wave, re, unicodedata, uuid
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from socketserver import ThreadingMixIn
-from urllib.parse import urlparse, parse_qs
+import base64
+import csv
+import glob
+import hashlib
+import html
+import io
+import json
+import math
+import os
+import re
+import subprocess
+import tempfile
+import threading
+import time
+import unicodedata
+import uuid
+import wave
 from datetime import datetime
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from socketserver import ThreadingMixIn
+from urllib.parse import parse_qs, urlparse
 
-try:
-    from shared.scorecard import compute_scorecard, load_hardware_config
-except Exception:
-    compute_scorecard = None
-    load_hardware_config = None
+from shared.capabilities import CapabilityDetector, save_hardware_snapshot
+from shared.config_validation import validate_benchmark_config
+from shared.result_parser import is_benchmark_result, load_result_file, normalize_result
+from shared.scorecard import compute_scorecard, load_hardware_config
 
 BASE = os.environ.get("PDC_BASE", os.path.dirname(os.path.abspath(__file__)))
 RESULTS_DIR = os.path.join(BASE, "results")
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
 CONTAINERS = {"vision": 8010, "slm": 8011, "audio": 8012}
+CONTAINER_NAMES = {front: f"pdc-{front}" for front in CONTAINERS}
 MODEL_TARGETS = ("vision", "slm", "audio_asr", "audio_tts")
 
 # Estado de execução dos benchmarks iniciados pelo dashboard.
 _benchmark_status = {}  # {front: {running, progress, started, result}}
 _lock = threading.Lock()
+_result_cache = {}
+_result_cache_lock = threading.Lock()
+_config_lock = threading.RLock()
+_hardware_cache = None
+_hardware_cache_lock = threading.Lock()
+
+
+def _benchmark_timeout_sec():
+    try:
+        return max(600, min(86_400, int(os.environ.get(
+            "PDC_BENCHMARK_TIMEOUT_SEC", "21600"))))
+    except (TypeError, ValueError):
+        return 21_600
 
 
 def _models_path():
@@ -34,10 +63,32 @@ def _load_yaml(path):
         return yaml.safe_load(f) or {}
 
 
+def _atomic_write_text(path, text):
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=directory, delete=False) as handle:
+        temporary_path = handle.name
+        handle.write(text)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.chmod(temporary_path, 0o644)
+    try:
+        os.replace(temporary_path, path)
+    except Exception:
+        try:
+            os.unlink(temporary_path)
+        except OSError:
+            pass
+        raise
+
+
 def _write_yaml(path, data):
     import yaml
-    with open(path, "w") as f:
-        yaml.safe_dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    text = yaml.safe_dump(
+        data, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    with _config_lock:
+        _atomic_write_text(path, text)
 
 
 def _get_models_section(cfg, target, create=False):
@@ -96,6 +147,18 @@ def _normalize_artifact_url(value):
     if "huggingface.co" in url and "/raw/" in url:
         url = url.replace("/raw/", "/resolve/")
     return url
+
+
+def _validate_artifact_url(value, label):
+    url = str(value or "").strip()
+    if len(url) > 4_096:
+        raise ValueError(f"{label} excede 4.096 caracteres")
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ValueError(f"{label} deve usar HTTP ou HTTPS")
+    if parsed.username or parsed.password:
+        raise ValueError(f"{label} não pode conter credenciais")
+    return parsed.geturl()
 
 
 def _guess_chat_format(*values):
@@ -177,9 +240,21 @@ def _to_number(value, integer=False):
     if value in (None, ""):
         return None
     number = float(value)
+    if not math.isfinite(number):
+        raise ValueError("valor numérico inválido")
     if integer:
         return int(number)
     return int(number) if number.is_integer() else round(number, 3)
+
+
+def _bounded_integer(value, label, minimum, maximum):
+    try:
+        number = int(value)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError(f"{label} deve ser inteiro")
+    if number < minimum or number > maximum:
+        raise ValueError(f"{label} deve ficar entre {minimum} e {maximum}")
+    return number
 
 
 def _parse_languages(value):
@@ -200,7 +275,7 @@ def load_models_config():
 
 
 def get_models_api():
-    """Returns structured models list for the frontend."""
+    """Retorna a lista de modelos usada pelo dashboard."""
     cfg = load_models_config()
     result = {"vision": [], "slm": [], "audio_asr": [], "audio_tts": []}
 
@@ -245,8 +320,29 @@ def get_models_catalog():
 
 def _build_model_entry(target, data):
     description = str(data.get("description", "")).strip()
-    size_mb = _to_number(data.get("size_mb"))
-    min_ram_gb = _to_number(data.get("min_ram_gb"))
+    if len(description) > 500:
+        raise ValueError("descrição deve ter até 500 caracteres")
+
+    def optional_bounded_number(key, label, maximum):
+        value = data.get(key)
+        if value in (None, ""):
+            return None
+        return _bounded_float(value, label, 0, maximum)
+
+    def optional_filename(value):
+        filename = str(value or "").strip()
+        if not filename:
+            return None
+        if len(filename) > 255 or os.path.basename(filename) != filename \
+                or "\\" in filename or filename in (".", ".."):
+            raise ValueError("nome de arquivo inválido")
+        return filename
+
+    size_mb = optional_bounded_number("size_mb", "tamanho do modelo", 10_000_000)
+    min_ram_gb = optional_bounded_number("min_ram_gb", "RAM mínima", 1_000_000)
+    sha256 = str(data.get("sha256") or "").strip().lower()
+    if sha256 and not re.fullmatch(r"[0-9a-f]{64}", sha256):
+        raise ValueError("SHA-256 deve conter 64 caracteres hexadecimais")
     gpu_capable = _to_bool(data.get("gpu_capable"), default=(target != "audio_tts"))
 
     def _common(entry):
@@ -257,17 +353,20 @@ def _build_model_entry(target, data):
             entry["size_mb"] = size_mb
         if min_ram_gb is not None:
             entry["min_ram_gb"] = min_ram_gb
+        if sha256:
+            entry["sha256"] = sha256
         return entry
 
     if target == "vision":
         url = str(data.get("url", "")).strip()
         if not url:
             raise ValueError("URL do modelo de visão é obrigatória")
+        url = _validate_artifact_url(url, "URL do modelo de visão")
         entry = _common({
             "format": str(data.get("format", "ultralytics")).strip() or "ultralytics",
             "url": url,
         })
-        filename = str(data.get("filename", "")).strip()
+        filename = optional_filename(data.get("filename"))
         if filename:
             entry["filename"] = filename
         return entry
@@ -276,14 +375,17 @@ def _build_model_entry(target, data):
         url = str(data.get("url", "")).strip()
         if not url:
             raise ValueError("URL do modelo SLM é obrigatória")
+        url = _validate_artifact_url(url, "URL do modelo SLM")
         entry = _common({
             "format": str(data.get("format", "gguf")).strip() or "gguf",
             "url": url,
-            "gpu_layers": _to_number(data.get("gpu_layers", 33), integer=True) or 0,
-            "context_length": _to_number(data.get("context_length", 2048), integer=True) or 2048,
+            "gpu_layers": _bounded_integer(
+                data.get("gpu_layers", 33), "camadas de GPU", 0, 1_000_000),
+            "context_length": _bounded_integer(
+                data.get("context_length", 2048), "contexto", 256, 10_000_000),
             "chat_format": str(data.get("chat_format", "tinyllama")).strip() or "tinyllama",
         })
-        filename = str(data.get("filename", "")).strip()
+        filename = optional_filename(data.get("filename"))
         if filename:
             entry["filename"] = filename
         return entry
@@ -292,6 +394,8 @@ def _build_model_entry(target, data):
         model_id = str(data.get("model_id", "")).strip()
         if not model_id:
             raise ValueError("model_id do ASR é obrigatório")
+        if len(model_id) > 512:
+            raise ValueError("model_id do ASR deve ter até 512 caracteres")
         entry = _common({
             "format": str(data.get("format", "faster-whisper")).strip() or "faster-whisper",
             "model_id": model_id,
@@ -308,6 +412,8 @@ def _build_model_entry(target, data):
             raise ValueError("URL do modelo TTS é obrigatória")
         if not config_url:
             raise ValueError("URL do config do TTS é obrigatória")
+        model_url = _validate_artifact_url(model_url, "URL do modelo TTS")
+        config_url = _validate_artifact_url(config_url, "URL do config TTS")
         return _common({
             "format": str(data.get("format", "piper")).strip() or "piper",
             "model_url": model_url,
@@ -321,8 +427,41 @@ def write_models_config(cfg):
     _write_yaml(_models_path(), cfg)
 
 
+def _expected_runtime_model(target, key):
+    section = _get_models_section(load_models_config(), target, create=False)
+    model = section.get("models", {}).get(key) or {}
+    if target == "audio_asr":
+        return str(model.get("model_id") or "")
+    source = model.get("model_url") if target == "audio_tts" else model.get("url")
+    return str(model.get("filename") or _basename_from_url(source) or "")
+
+
+def _loaded_runtime_model(target):
+    try:
+        if target == "vision":
+            info = _http_get("http://localhost:8010/info")
+            return str((info.get("model") or {}).get("name") or "")
+        if target == "slm":
+            info = _http_get("http://localhost:8011/info")
+            return str((info.get("model") or {}).get("name") or "")
+        info = _http_get("http://localhost:8012/info")
+        model = info.get("model") or {}
+        field = "asr_model" if target == "audio_asr" else "tts_model"
+        return str(model.get(field) or "")
+    except Exception:
+        return ""
+
+
 def activate_model_target(target, key):
     try:
+        expected = _expected_runtime_model(target, key)
+        if expected and _loaded_runtime_model(target) == expected:
+            return {
+                "status": "ok",
+                "target": target,
+                "key": key,
+                "already_loaded": True,
+            }
         if target == "slm":
             return _http_post("http://localhost:8011/switch-model", {"model": key}, timeout=1800)
         if target == "vision":
@@ -349,15 +488,18 @@ def save_model_definition(data):
         raise ValueError("Importação direta de Ollama ainda não é suportada. Para SLM, use o link do arquivo GGUF.")
 
     data = _prepare_model_payload(target, data)
-    cfg = load_models_config()
-    section = _get_models_section(cfg, target, create=True)
-    key = _slugify_model_key(data.get("key") or target)
-    section["models"][key] = _build_model_entry(target, data)
+    with _config_lock:
+        cfg = load_models_config()
+        section = _get_models_section(cfg, target, create=True)
+        key = _slugify_model_key(data.get("key") or target)
+        if len(key) > 128:
+            raise ValueError("chave do modelo deve ter até 128 caracteres")
+        section["models"][key] = _build_model_entry(target, data)
 
-    if _to_bool(data.get("set_default")) or not section.get("default"):
-        section["default"] = key
+        if _to_bool(data.get("set_default")) or not section.get("default"):
+            section["default"] = key
 
-    write_models_config(cfg)
+        write_models_config(cfg)
 
     activation = None
     status = "ok"
@@ -379,13 +521,14 @@ def set_default_model(target, key, activate_now=False):
     if target not in MODEL_TARGETS:
         raise ValueError("target inválido")
 
-    cfg = load_models_config()
-    section = _get_models_section(cfg, target, create=True)
-    if key not in section.get("models", {}):
-        raise ValueError(f"modelo '{key}' não encontrado")
+    with _config_lock:
+        cfg = load_models_config()
+        section = _get_models_section(cfg, target, create=True)
+        if key not in section.get("models", {}):
+            raise ValueError(f"modelo '{key}' não encontrado")
 
-    section["default"] = key
-    write_models_config(cfg)
+        section["default"] = key
+        write_models_config(cfg)
 
     activation = activate_model_target(target, key) if activate_now else None
     return {"status": "ok", "target": target, "key": key, "activation": activation}
@@ -395,16 +538,17 @@ def delete_model_definition(target, key):
     if target not in MODEL_TARGETS:
         raise ValueError("target inválido")
 
-    cfg = load_models_config()
-    section = _get_models_section(cfg, target, create=True)
-    models = section.get("models", {})
-    if key not in models:
-        raise ValueError(f"modelo '{key}' não encontrado")
+    with _config_lock:
+        cfg = load_models_config()
+        section = _get_models_section(cfg, target, create=True)
+        models = section.get("models", {})
+        if key not in models:
+            raise ValueError(f"modelo '{key}' não encontrado")
 
-    del models[key]
-    if section.get("default") == key:
-        section["default"] = next(iter(models.keys()), "")
-    write_models_config(cfg)
+        del models[key]
+        if section.get("default") == key:
+            section["default"] = next(iter(models.keys()), "")
+        write_models_config(cfg)
     return {"status": "ok", "target": target, "key": key, "new_default": section.get("default")}
 
 
@@ -423,7 +567,7 @@ def _http_post(url, data, timeout=60):
 
 
 def _http_post_raw(url, data, timeout=60):
-    """POST that returns raw bytes + content-type (for binary responses like WAV)."""
+    """Executa POST e preserva respostas binárias, como áudio WAV."""
     import urllib.request
     body = json.dumps(data).encode()
     req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
@@ -444,11 +588,16 @@ def _http_post_multipart(url, fields=None, files=None, timeout=120):
         body.write(b"\r\n")
 
     for file_item in (files or []):
+        field_name = re.sub(r"[^a-zA-Z0-9_-]", "", str(file_item["name"]))
+        filename = os.path.basename(str(file_item["filename"]))
+        filename = filename.replace('"', "").replace("\r", "").replace("\n", "")
+        content_type = re.sub(
+            r"[^a-zA-Z0-9.+/-]", "", str(file_item.get("content_type", "")))
         body.write(f"--{boundary}\r\n".encode())
         body.write(
-            f'Content-Disposition: form-data; name="{file_item["name"]}"; filename="{file_item["filename"]}"\r\n'.encode()
+            f'Content-Disposition: form-data; name="{field_name}"; filename="{filename}"\r\n'.encode()
         )
-        body.write(f'Content-Type: {file_item.get("content_type", "application/octet-stream")}\r\n\r\n'.encode())
+        body.write(f'Content-Type: {content_type or "application/octet-stream"}\r\n\r\n'.encode())
         body.write(file_item["content"])
         body.write(b"\r\n")
 
@@ -470,17 +619,72 @@ def gpu_metrics():
             "memory.used,memory.total,temperature.gpu,power.draw,clocks.current.sm,"
             "fan.speed,pstate",
             "--format=csv,noheader,nounits"
-        ], text=True, timeout=3).strip()
-        parts = [p.strip() for p in out.split(",")]
-        safe = lambda i: float(parts[i]) if parts[i] not in ("[N/A]", "N/A", "[Not Supported]") else None
+        ], text=True, timeout=3, stderr=subprocess.PIPE).strip()
+        rows = list(csv.reader(out.splitlines()))
+        devices = []
+        unavailable = {"[N/A]", "N/A", "[Not Supported]", ""}
+        for index, row in enumerate(rows):
+            parts = [part.strip() for part in row]
+            if len(parts) < 9:
+                continue
+
+            def number(position):
+                try:
+                    return None if parts[position] in unavailable else float(parts[position])
+                except (IndexError, ValueError):
+                    return None
+
+            devices.append({
+                "index": index,
+                "name": parts[0],
+                "util_gpu_pct": number(1),
+                "util_mem_pct": number(2),
+                "mem_used_mb": number(3),
+                "mem_total_mb": number(4),
+                "temp_c": number(5),
+                "power_w": number(6),
+                "clock_mhz": number(7),
+                "fan_pct": number(8),
+                "pstate": parts[9] if len(parts) > 9 else None,
+            })
+        if not devices:
+            return {"error": "nenhuma GPU retornada pelo nvidia-smi"}
+
+        def aggregate(key, mode="max"):
+            values = [device[key] for device in devices if device.get(key) is not None]
+            if not values:
+                return None
+            return sum(values) if mode == "sum" else max(values)
+
         return {
-            "name": parts[0], "util_gpu_pct": safe(1), "util_mem_pct": safe(2),
-            "mem_used_mb": safe(3), "mem_total_mb": safe(4), "temp_c": safe(5),
-            "power_w": safe(6), "clock_mhz": safe(7), "fan_pct": safe(8),
-            "pstate": parts[9] if len(parts) > 9 else None,
+            "name": " / ".join(device["name"] for device in devices),
+            "util_gpu_pct": aggregate("util_gpu_pct"),
+            "util_mem_pct": aggregate("util_mem_pct"),
+            "mem_used_mb": aggregate("mem_used_mb", "sum"),
+            "mem_total_mb": aggregate("mem_total_mb", "sum"),
+            "temp_c": aggregate("temp_c"),
+            "power_w": aggregate("power_w", "sum"),
+            "clock_mhz": aggregate("clock_mhz"),
+            "fan_pct": aggregate("fan_pct"),
+            "pstate": " / ".join(str(device["pstate"]) for device in devices
+                                  if device.get("pstate")),
+            "devices": devices,
         }
-    except Exception as e:
-        return {"error": str(e)}
+    except FileNotFoundError:
+        return {"error": "nvidia-smi não está instalado"}
+    except subprocess.TimeoutExpired:
+        return {"error": "A consulta ao driver NVIDIA excedeu 3 segundos"}
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or exc.stdout or "").strip().splitlines()
+        return {
+            "error": "Telemetria NVIDIA indisponível",
+            "detail": detail[0][:240] if detail else "nvidia-smi encerrou com erro",
+        }
+    except Exception as exc:
+        return {
+            "error": "Falha ao consultar a GPU",
+            "detail": type(exc).__name__,
+        }
 
 
 def system_metrics():
@@ -496,13 +700,13 @@ def system_metrics():
                 cpu_temp = temps[name][0].current
                 break
         return {
-            "ram_total_gb": round(vm.total / 1e9, 1),
-            "ram_used_gb": round(vm.used / 1e9, 1),
+            "ram_total_gb": round(vm.total / (1024 ** 3), 1),
+            "ram_used_gb": round(vm.used / (1024 ** 3), 1),
             "ram_pct": vm.percent,
             "cpu_pct": cpu,
             "cpu_count": psutil.cpu_count(),
-            "disk_total_gb": round(disk.total / 1e9, 1),
-            "disk_used_gb": round(disk.used / 1e9, 1),
+            "disk_total_gb": round(disk.total / (1024 ** 3), 1),
+            "disk_used_gb": round(disk.used / (1024 ** 3), 1),
             "disk_pct": disk.percent,
             "cpu_temp_c": cpu_temp,
         }
@@ -513,19 +717,244 @@ def system_metrics():
 def container_health(port):
     try:
         return _http_get(f"http://localhost:{port}/health", timeout=5)
-    except:
+    except Exception as exc:
+        try:
+            body = exc.read()
+            payload = json.loads(body)
+            if isinstance(payload, dict):
+                return payload
+        except Exception:
+            pass
         return {"status": "offline"}
 
 
-def container_info(port):
+def _docker_inspect(front):
+    if front not in CONTAINER_NAMES:
+        raise ValueError(f"frente inválida: {front}")
+    output = subprocess.check_output(
+        ["docker", "inspect", CONTAINER_NAMES[front]],
+        text=True,
+        timeout=5,
+        stderr=subprocess.STDOUT,
+    )
+    data = json.loads(output)[0]
+    host = data.get("HostConfig", {})
+    state = data.get("State", {})
+    health = state.get("Health", {})
+    memory_bytes = int(host.get("Memory") or 0)
+    nano_cpus = int(host.get("NanoCpus") or 0)
+    shm_bytes = int(host.get("ShmSize") or 0)
+    return {
+        "front": front,
+        "name": CONTAINER_NAMES[front],
+        "status": health.get("Status") or state.get("Status") or "unknown",
+        "running": bool(state.get("Running")),
+        "cpu_limit": nano_cpus / 1_000_000_000 if nano_cpus else 0,
+        "memory_limit_mb": round(memory_bytes / (1024 ** 2)) if memory_bytes else 0,
+        "pids_limit": host.get("PidsLimit")
+        if isinstance(host.get("PidsLimit"), int) and host.get("PidsLimit") > 0 else 0,
+        "shm_size_mb": round(shm_bytes / (1024 ** 2)),
+        "restart_policy": (host.get("RestartPolicy") or {}).get("Name") or "no",
+    }
+
+
+def _container_limits_config():
+    path = os.path.join(BASE, "config", "container_limits.yaml")
     try:
-        return _http_get(f"http://localhost:{port}/info", timeout=5)
-    except:
-        return {}
+        config = _load_yaml(path)
+    except FileNotFoundError:
+        config = {}
+    for front in CONTAINERS:
+        config.setdefault(front, {
+            "cpu_limit": 0,
+            "memory_limit_mb": 0,
+            "pids_limit": 0,
+        })
+    return config
+
+
+def container_runtime_info():
+    desired = _container_limits_config()
+    result = {}
+    for front in CONTAINERS:
+        try:
+            result[front] = _docker_inspect(front)
+            result[front]["configured"] = desired.get(front, {})
+        except Exception as exc:
+            result[front] = {
+                "front": front,
+                "name": CONTAINER_NAMES[front],
+                "status": "unavailable",
+                "error": str(exc).strip(),
+                "configured": desired.get(front, {}),
+            }
+    return result
+
+
+def _bounded_float(value, label, minimum, maximum):
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError(f"{label} deve ser numérico")
+    if not math.isfinite(number) or number < minimum or number > maximum:
+        raise ValueError(f"{label} deve ficar entre {minimum} e {maximum}")
+    return number
+
+
+def update_container_limits(data):
+    front = str(data.get("front", ""))
+    if front not in CONTAINER_NAMES:
+        raise ValueError("frente inválida")
+    with _lock:
+        if _benchmark_status.get(front, {}).get("running"):
+            raise RuntimeError("não altere limites durante um benchmark")
+
+    cpu_limit = _bounded_float(data.get("cpu_limit", 0), "limite de CPU", 0, 1024)
+    if cpu_limit == 0:
+        cpu_limit = 0
+    memory_limit = _bounded_integer(
+        data.get("memory_limit_mb", 0), "limite de RAM", 0, 1_048_576)
+    pids_limit = _bounded_integer(
+        data.get("pids_limit", 0), "limite de processos", 0, 4_194_304)
+    if 0 < memory_limit < 64:
+        raise ValueError("limite de RAM deve ser zero ou pelo menos 64 MB")
+    if 0 < cpu_limit < 0.1:
+        raise ValueError("limite de CPU deve ser zero ou pelo menos 0,1")
+    if 0 < pids_limit < 16:
+        raise ValueError("limite de processos deve ser zero ou pelo menos 16")
+
+    command = [
+        "docker", "update",
+        "--cpus", str(cpu_limit),
+        "--memory", "0" if memory_limit == 0 else f"{memory_limit}m",
+        "--pids-limit", "-1" if pids_limit == 0 else str(pids_limit),
+        CONTAINER_NAMES[front],
+    ]
+    result = subprocess.run(
+        command, capture_output=True, text=True, timeout=30)
+    if result.returncode != 0:
+        raise RuntimeError((result.stderr or result.stdout).strip() or "docker update falhou")
+    limits_path = os.path.join(BASE, "config", "container_limits.yaml")
+    with _config_lock:
+        limits = _container_limits_config()
+        limits[front] = {
+            "cpu_limit": cpu_limit,
+            "memory_limit_mb": memory_limit,
+            "pids_limit": pids_limit,
+        }
+        _write_yaml(limits_path, limits)
+    return {"status": "ok", "container": _docker_inspect(front)}
+
+
+def restart_container(front):
+    if front not in CONTAINER_NAMES:
+        raise ValueError("frente inválida")
+    with _lock:
+        if _benchmark_status.get(front, {}).get("running"):
+            raise RuntimeError("não reinicie o container durante um benchmark")
+    result = subprocess.run(
+        ["docker", "restart", CONTAINER_NAMES[front]],
+        capture_output=True, text=True, timeout=60)
+    if result.returncode != 0:
+        raise RuntimeError((result.stderr or result.stdout).strip() or "docker restart falhou")
+    return {"status": "ok", "front": front}
+
+
+def hardware_config_api():
+    path = os.path.join(BASE, "config", "hardware.yaml")
+    return _load_yaml(path)
+
+
+def benchmark_profiles_api():
+    config = _load_yaml(os.path.join(BASE, "config", "benchmark.yaml"))
+    validate_benchmark_config(config)
+    profiles = []
+    for name, profile in config["profiles"].items():
+        fixed_duration = 0.0
+        for section_name in ("throughput", "resource_usage"):
+            section = profile.get(section_name) or {}
+            if section.get("enabled", True):
+                fixed_duration += float(section.get("duration_sec", 0))
+        sustained = profile.get("sustained_load") or {}
+        if sustained.get("enabled", True):
+            fixed_duration += float(sustained.get("duration_min", 0)) * 60.0
+        latency = profile.get("latency") or {}
+        latency_samples = (
+            int(latency.get("samples", 0)) if latency.get("enabled", True) else 0
+        )
+        profiles.append({
+            "name": name,
+            "fixed_duration_sec": round(fixed_duration, 3),
+            "latency_samples": latency_samples,
+        })
+    return {"default": config.get("default_profile"), "profiles": profiles}
+
+
+def detected_hardware_api(refresh=False):
+    global _hardware_cache
+    with _hardware_cache_lock:
+        if refresh or _hardware_cache is None:
+            hardware = CapabilityDetector().detect(use_host_snapshot=False)
+            snapshot_path = os.path.join(BASE, "data", "hardware", "host.json")
+            snapshot = save_hardware_snapshot(hardware, snapshot_path)
+            _hardware_cache = {
+                "detected_at": snapshot["captured_at"],
+                "hardware_id": snapshot["hardware_id"],
+                "snapshot_path": os.path.relpath(snapshot_path, BASE),
+                "hardware": hardware,
+            }
+        return _hardware_cache
+
+
+def save_hardware_config(data):
+    path = os.path.join(BASE, "config", "hardware.yaml")
+    current = hardware_config_api()
+    profile_id = str(data.get("profile_id", "")).strip()
+    description = str(data.get("description", "")).strip()
+    currency = str(data.get("currency", "BRL")).strip().upper()
+    if not profile_id or len(profile_id) > 128:
+        raise ValueError("identificador da bancada é obrigatório e deve ter até 128 caracteres")
+    if len(description) > 500:
+        raise ValueError("descrição deve ter até 500 caracteres")
+    if not re.fullmatch(r"[A-Z]{3,8}", currency):
+        raise ValueError("moeda deve usar de 3 a 8 letras")
+
+    def optional_number(key, label, strictly_positive=False):
+        value = data.get(key)
+        if value in (None, ""):
+            return None
+        number = _bounded_float(value, label, 0, 1_000_000_000_000)
+        if strictly_positive and number <= 0:
+            raise ValueError(f"{label} deve ser maior que zero")
+        return number
+
+    current["profile"] = {"id": profile_id, "description": description}
+    current["cost_model"] = {
+        "currency": currency,
+        "hardware_price": optional_number("hardware_price", "preço do hardware"),
+        "electricity_per_kwh": optional_number(
+            "electricity_per_kwh", "custo de energia"),
+        "amortization_hours": optional_number(
+            "amortization_hours", "horas de amortização", strictly_positive=True),
+    }
+    _write_yaml(path, current)
+    return {"status": "ok", "hardware": current}
+
+
+def _format_result_timestamp(value):
+    if not value:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(str(value))
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone()
+        return parsed.strftime("%d/%m %H:%M")
+    except (TypeError, ValueError):
+        return str(value)[:16]
 
 
 def render_results_html(front_filter="all"):
-    """Server-side render the results list as HTML rows (flex divs, no table)."""
+    """Renderiza as linhas de resultados exibidas no dashboard."""
     results = all_results()
     if front_filter and front_filter != "all":
         results = [r for r in results if r.get("front") == front_filter]
@@ -543,17 +972,19 @@ def render_results_html(front_filter="all"):
 
     rows = []
     for r in results:
-        ts = ""
         raw_ts = r.get("timestamp", "")
-        if raw_ts:
-            try:
-                dt = datetime.fromisoformat(raw_ts)
-                ts = dt.strftime("%d/%m %H:%M")
-            except Exception:
-                ts = raw_ts[:16]
-        front = r.get("front") or "?"
-        model = (r.get("model") or "?").replace(".gguf", "").replace(".gemma4", "")[:32]
-        profile = r.get("profile") or "?"
+        ts = _format_result_timestamp(raw_ts)
+        front = str(r.get("front") or "?")
+        model_full = str(r.get("model") or "?")
+        model = model_full.replace(".gguf", "").replace(".gemma4", "")[:32]
+        profile = str(r.get("profile") or "?")
+        primary = r.get("primary_metric") if isinstance(r.get("primary_metric"), dict) else {}
+        primary_value = primary.get("value")
+        primary_text = (
+            f"{fmt(primary_value, 2)} {str(primary.get('unit') or '')}".strip()
+            if primary_value is not None else "—"
+        )
+        primary_title = str(primary.get("name") or "métrica primária")
         fc = "#93c5fd" if front == "vision" else "#22c55e" if front == "slm" else "#f59e0b"
         thr = fmt(r.get("throughput_ops"), 2)
         p50 = fmt(r.get("p50_ms"))
@@ -561,114 +992,150 @@ def render_results_html(front_filter="all"):
         p99 = fmt(r.get("p99_ms"))
         std = fmt(r.get("std_ms"))
         ram = (fmt(r.get("peak_ram_mb"), 0) + "MB") if r.get("peak_ram_mb") is not None else "—"
+        ram_delta = (fmt(r.get("peak_ram_delta_mb"), 0) + "MB") \
+            if r.get("peak_ram_delta_mb") is not None else "—"
+        cpu = (fmt(r.get("avg_cpu_pct"), 0) + "%") \
+            if r.get("avg_cpu_pct") is not None else "—"
         gpu = (fmt(r.get("peak_gpu_util"), 0) + "%") if r.get("peak_gpu_util") is not None else "—"
         vram = (fmt(r.get("peak_vram_mb"), 0) + "MB") if r.get("peak_vram_mb") is not None else "—"
+        vram_delta = (fmt(r.get("peak_vram_delta_mb"), 0) + "MB") \
+            if r.get("peak_vram_delta_mb") is not None else "—"
         temp = (fmt(r.get("peak_temp_c"), 0) + "°C") if r.get("peak_temp_c") is not None else "—"
+        power = (fmt(r.get("avg_power_w"), 1) + "W") \
+            if r.get("avg_power_w") is not None else "—"
+        energy = (fmt(r.get("energy_j"), 1) + "J") \
+            if r.get("energy_j") is not None else "—"
+        coverage = (fmt(float(r["energy_coverage_ratio"]) * 100.0, 0) + "%") \
+            if r.get("energy_coverage_ratio") is not None else "—"
+        energy_per_unit = fmt(r.get("energy_per_primary_unit_j"), 5)
+        currency = str(r.get("cost_currency") or "")
+        cost = (f"{currency} {fmt(r.get('cost_per_1k'), 6)}".strip()
+                if r.get("cost_per_1k") is not None else "—")
+        ram_scope = {
+            "container_cgroup_working_set": "Pico do working set de memória do container",
+            "process_tree_rss": "Pico de RSS da árvore de processos da carga",
+            "legacy_unspecified": "Resultado legado: o escopo da RAM não foi registrado",
+        }.get(r.get("ram_scope"), "Pico de RAM da carga durante o teste")
+        vram_scope = {
+            "workload_processes": "Pico de VRAM dos processos desta carga",
+            "visible_devices": "Pico de VRAM total nos dispositivos visíveis",
+            "legacy_device": "Resultado legado: VRAM total do dispositivo",
+        }.get(r.get("vram_scope"), "Pico de VRAM durante o teste")
+        gpu_scope = {
+            "workload_processes": "Pico de uso de GPU atribuído aos processos desta carga",
+            "visible_devices": "Pico de uso total nos dispositivos GPU visíveis",
+            "legacy_unspecified": "Resultado legado: o escopo de GPU não foi registrado",
+        }.get(r.get("gpu_scope"), "Pico de uso de GPU durante o teste")
+        cpu_scope = {
+            "container_cgroup": "Média de CPU do contêiner; 100% corresponde a um núcleo",
+            "process_tree": "Média de CPU da árvore de processos; 100% corresponde a um núcleo",
+            "legacy_unspecified": "Resultado legado: o escopo de CPU não foi registrado",
+        }.get(r.get("cpu_scope"), "Média de CPU durante a fase de recursos")
+        power_scope = {
+            "device_components": "Potência dos dispositivos GPU e pacotes de CPU medidos; não é exclusiva do contêiner",
+            "legacy_device": "Resultado legado: potência medida no dispositivo",
+        }.get(r.get("power_scope"), "Potência média dos componentes medidos")
+        escaped_model = html.escape(model_full, quote=True)
         rows.append(
             '<div style="display:flex;padding:5px 0;border-bottom:1px solid #242424;'
             'font-size:.77rem;color:#e7e7e7;align-items:center">'
-            f'<div style="flex:0 0 88px;color:#a3a3a3;font-size:.72rem;white-space:nowrap">{ts}</div>'
+            f'<div style="flex:0 0 88px;color:#a3a3a3;font-size:.72rem;white-space:nowrap">{html.escape(ts)}</div>'
             f'<div style="flex:0 0 56px"><span style="background:#202020;color:{fc};padding:1px 7px;'
-            f'border-radius:5px;font-size:.68rem;font-weight:700">{front}</span></div>'
+            f'border-radius:5px;font-size:.68rem;font-weight:700">{html.escape(front)}</span></div>'
             f'<div style="flex:1;min-width:150px;font-size:.73rem;overflow:hidden;'
-            f'text-overflow:ellipsis;white-space:nowrap" title="{r.get("model","")}">{model}</div>'
-            f'<div style="flex:0 0 62px;color:#a3a3a3">{profile}</div>'
+            f'text-overflow:ellipsis;white-space:nowrap" title="{escaped_model}">{html.escape(model)}</div>'
+            f'<div style="flex:0 0 62px;color:#a3a3a3">{html.escape(profile)}</div>'
+            f'<div style="flex:0 0 88px;color:#14b8a6" title="{html.escape(primary_title)}">{html.escape(primary_text)}</div>'
             f'<div style="flex:0 0 82px;font-weight:700;color:#14b8a6" title="Inferências concluídas por segundo no teste de throughput">{thr}</div>'
             f'<div style="flex:0 0 58px" title="Latência p50 do teste de latência">{p50}</div>'
             f'<div style="flex:0 0 58px" title="Latência p95 do teste de latência">{p95}</div>'
             f'<div style="flex:0 0 58px" title="Latência p99 do teste de latência">{p99}</div>'
             f'<div style="flex:0 0 58px" title="Desvio padrão das amostras de latência">{std}</div>'
-            f'<div style="flex:0 0 68px" title="Pico de RAM no teste de uso de recursos">{ram}</div>'
-            f'<div style="flex:0 0 52px" title="Maior utilização percentual de GPU observada">{gpu}</div>'
-            f'<div style="flex:0 0 64px" title="Maior uso de VRAM observado">{vram}</div>'
+            f'<div style="flex:0 0 68px" title="{html.escape(ram_scope)}">{ram}</div>'
+            f'<div style="flex:0 0 62px" title="Pico menos baseline de RAM">{ram_delta}</div>'
+            f'<div style="flex:0 0 62px" title="{html.escape(cpu_scope)}">{cpu}</div>'
+            f'<div style="flex:0 0 52px" title="{html.escape(gpu_scope)}">{gpu}</div>'
+            f'<div style="flex:0 0 64px" title="{html.escape(vram_scope)}">{vram}</div>'
+            f'<div style="flex:0 0 62px" title="Pico menos baseline de VRAM">{vram_delta}</div>'
             f'<div style="flex:0 0 52px" title="Maior temperatura observada">{temp}</div>'
+            f'<div style="flex:0 0 62px" title="{html.escape(power_scope)}">{power}</div>'
+            f'<div style="flex:0 0 72px" title="{html.escape(str(r.get("energy_source") or "sem fonte"))}">{energy}</div>'
+            f'<div style="flex:0 0 58px" title="Cobertura temporal da telemetria de energia">{coverage}</div>'
+            f'<div style="flex:0 0 72px" title="Energia por unidade principal">{energy_per_unit}</div>'
+            f'<div style="flex:0 0 82px" title="Custo por mil unidades principais">{html.escape(cost)}</div>'
             '</div>'
         )
     return "\n".join(rows)
 
 
-def _normalize_model(m):
-    """Return a plain string for the model field regardless of JSON shape."""
-    if m is None:
-        return "?"
-    if isinstance(m, str):
-        return m
-    if isinstance(m, dict):
-        parts = [v for v in m.values() if isinstance(v, str)]
-        return " / ".join(parts) if parts else "?"
-    return str(m)
-
-
 def all_results():
     files = sorted(glob.glob(f"{RESULTS_DIR}/*.json"), key=os.path.getmtime, reverse=True)
+    hardware_path = os.path.join(BASE, "config", "hardware.yaml")
+    try:
+        hardware_stamp = os.stat(hardware_path).st_mtime_ns
+    except OSError:
+        hardware_stamp = 0
+    hardware_config = load_hardware_config(hardware_path)
     out = []
-    for f in files:
+    seen_results = set()
+    active_files = set(files)
+    for path in files:
+        cache_key = None
         try:
-            with open(f) as fp:
-                d = json.load(fp)
-            b = d.get("benchmark_results", {})
-            tp = b.get("throughput", {})
-            lat = b.get("latency", {})
-            res = b.get("resource_usage", {})
-            sust = b.get("sustained_load", b.get("sustained", {}))
-            membw = b.get("memory_bandwidth", {})
-            scorecard = d.get("scorecard") or {}
-            if not scorecard and compute_scorecard:
-                try:
-                    hw_cfg = load_hardware_config(os.path.join(BASE, "config", "hardware.yaml")) if load_hardware_config else {}
-                    scorecard = compute_scorecard(d, hw_cfg)
-                except Exception:
-                    scorecard = {}
-            ts_data = res.get("timeseries", [])
-            # Derive peak GPU/VRAM from timeseries if not in top-level dict
-            gpu_vals  = [s["gpu_pct"]    for s in ts_data if s.get("gpu_pct")    is not None]
-            vram_vals = [s["gpu_mem_mb"] for s in ts_data if s.get("gpu_mem_mb") is not None]
-            ram_vals  = [s["ram_mb"]     for s in ts_data if s.get("ram_mb")     is not None]
-            peak_gpu  = res.get("peak_gpu_util")  or (max(gpu_vals)  if gpu_vals  else None)
-            peak_vram = res.get("peak_vram_mb")   or (max(vram_vals) if vram_vals else None)
-            peak_ram  = res.get("peak_ram_mb")    or (max(ram_vals)  if ram_vals  else None)
-            out.append({
-                "file": os.path.basename(f),
-                "front": d.get("front"), "model": _normalize_model(d.get("model")),
-                "profile": d.get("profile"), "timestamp": d.get("timestamp"),
-                "throughput_ops": tp.get("ops_per_sec"),
-                "total_iters": tp.get("iterations"),
-                "p50_ms": lat.get("p50_ms"), "p95_ms": lat.get("p95_ms"), "p99_ms": lat.get("p99_ms"),
-                "std_ms": lat.get("std_ms"), "min_ms": lat.get("min_ms"), "max_ms": lat.get("max_ms"),
-                "peak_ram_mb": peak_ram, "avg_cpu_pct": res.get("avg_cpu_pct"),
-                "peak_gpu_util": peak_gpu,
-                "peak_vram_mb": peak_vram,
-                "peak_temp_c": res.get("peak_temp_c"),
-                "sustained_avg_ops": sust.get("avg_ops_per_sec"),
-                "sustained_degradation": sust.get("degradation_pct"),
-                "mem_bw_gbs": membw.get("effective_bandwidth_gbs"),
-                "energy_j": res.get("total_energy_j"),
-                "methodology_version": d.get("methodology", {}).get("version"),
-                "comparability_key": d.get("metadata", {}).get("comparability_key"),
-                "throughput_error_rate": tp.get("error_rate"),
-                "latency_error_rate": lat.get("error_rate"),
-                "performance_score": scorecard.get("performance_score"),
-                "primary_metric": scorecard.get("primary_metric"),
-                "energy_per_op_j": scorecard.get("efficiency", {}).get("energy_per_op_j"),
-                "energy_per_primary_unit_j": scorecard.get("efficiency", {}).get("energy_per_primary_unit_j"),
-                "primary_metric_per_watt": scorecard.get("efficiency", {}).get("primary_metric_per_watt"),
-                "cost_per_1k": scorecard.get("cost", {}).get("cost_per_1k_primary_units"),
-                "scorecard_warnings": scorecard.get("warnings", []),
-            })
-        except:
-            pass
+            stat = os.stat(path)
+            cache_key = (stat.st_mtime_ns, stat.st_size, hardware_stamp)
+            with _result_cache_lock:
+                cached = _result_cache.get(path)
+            if cached and cached[0] == cache_key:
+                row = cached[1]
+                if row is None:
+                    continue
+            else:
+                data, row = load_result_file(path)
+                if not isinstance(data, dict):
+                    raise ValueError("o JSON raiz deve ser um objeto")
+                if not is_benchmark_result(data):
+                    with _result_cache_lock:
+                        _result_cache[path] = (cache_key, None)
+                    continue
+                data["scorecard"] = compute_scorecard(data, hardware_config)
+                row = normalize_result(data, filename=path)
+                with open(path, "rb") as result_file:
+                    row["source_sha256"] = hashlib.sha256(result_file.read()).hexdigest()
+                with _result_cache_lock:
+                    _result_cache[path] = (cache_key, row)
+            identity = (
+                "run_id", row["run_id"]
+            ) if row.get("run_id") else ("source_sha256", row.get("source_sha256"))
+            if identity[1] and identity in seen_results:
+                continue
+            seen_results.add(identity)
+            out.append(row)
+        except Exception as exc:
+            with _result_cache_lock:
+                _result_cache[path] = (cache_key, None)
+            print(f"[results] {os.path.basename(path)} ignorado: {exc}")
+
+    with _result_cache_lock:
+        for path in list(_result_cache):
+            if path not in active_files:
+                del _result_cache[path]
     return out
 
 
 def scorecard_summary():
-    """Aggregate high-level scorecard data for hardware comparison dashboards."""
+    """Resume os scorecards disponíveis para comparação."""
     rows = all_results()
     by_front = {}
     for row in rows:
         front = row.get("front") or "unknown"
         by_front.setdefault(front, []).append(row)
 
-    summary = {"generated_at": datetime.now().isoformat(), "fronts": {}, "results": rows}
+    summary = {
+        "generated_at": datetime.now().astimezone().isoformat(),
+        "fronts": {},
+        "results": rows,
+    }
     for front, items in by_front.items():
         scores = [r.get("performance_score") for r in items if r.get("performance_score") is not None]
         costs = [r.get("cost_per_1k") for r in items if r.get("cost_per_1k") is not None]
@@ -720,13 +1187,13 @@ def _activate_for_benchmark(front, model=None, mode=None):
 
 
 def trigger_benchmark(front, profile="quick", model=None, mode=None):
-    """Run benchmark in background thread, activating the selected model before execution."""
+    """Ativa o modelo e inicia o benchmark em segundo plano."""
     port = CONTAINERS.get(front)
     if not port:
-        return
+        return False
     with _lock:
         if _benchmark_status.get(front, {}).get("running"):
-            return  # already running
+            return False
         _benchmark_status[front] = {"running": True, "progress": "starting", "started": time.time()}
 
     def _run():
@@ -740,7 +1207,7 @@ def trigger_benchmark(front, profile="quick", model=None, mode=None):
             result = _http_post(
                 f"http://localhost:{port}/benchmark",
                 payload,
-                timeout=600
+                timeout=_benchmark_timeout_sec(),
             )
             with _lock:
                 _benchmark_status[front] = {"running": False, "progress": "done", "result": result}
@@ -749,6 +1216,7 @@ def trigger_benchmark(front, profile="quick", model=None, mode=None):
                 _benchmark_status[front] = {"running": False, "progress": "error", "error": str(e)}
 
     threading.Thread(target=_run, daemon=True).start()
+    return True
 
 
 def do_slm_inference(prompt, max_tokens=256):
@@ -768,7 +1236,7 @@ def do_tts(text):
     try:
         raw, ctype = _http_post_raw("http://localhost:8012/tts", {"text": text}, timeout=30)
         audio_b64 = base64.b64encode(raw).decode("ascii")
-        # Try to compute duration from WAV header
+        # A duração do WAV permite calcular o fator de tempo real.
         duration_s = None
         try:
             buf = io.BytesIO(raw)
@@ -805,33 +1273,6 @@ def do_vision_inference(model_key, filename, content_type, image_bytes):
         return {"error": str(e)}
 
 
-def read_benchmark_config():
-    path = os.path.join(BASE, "config", "benchmark.yaml")
-    try:
-        import yaml
-        with open(path) as f:
-            return yaml.safe_load(f)
-    except ImportError:
-        # fallback: read raw
-        with open(path) as f:
-            return {"raw": f.read()}
-    except Exception as e:
-        return {"error": str(e)}
-
-
-def write_benchmark_config(config):
-    path = os.path.join(BASE, "config", "benchmark.yaml")
-    try:
-        import yaml
-        with open(path, "w") as f:
-            yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
-        return {"status": "ok"}
-    except ImportError:
-        return {"error": "pyyaml not installed on host"}
-    except Exception as e:
-        return {"error": str(e)}
-
-
 DASHBOARD_PATH = os.path.join(BASE, "web", "dashboard.html")
 
 
@@ -845,37 +1286,56 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
-    def _cors(self):
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+    def _security_headers(self):
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
 
     def _json_response(self, data, code=200):
-        body = json.dumps(data).encode()
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self._cors()
-        self.send_header("Content-Length", len(body))
-        self.end_headers()
-        self.wfile.write(body)
+        body = json.dumps(data, ensure_ascii=False, allow_nan=False).encode()
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self._security_headers()
+            self.send_header("Content-Length", len(body))
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
 
     def _html_response(self, html):
         body = html.encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
-        self.send_header("Pragma", "no-cache")
-        self.send_header("Content-Length", len(body))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+            self.send_header("Pragma", "no-cache")
+            self.send_header(
+                "Content-Security-Policy",
+                "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+                "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
+                "media-src 'self' data: blob:; connect-src 'self'; object-src 'none'; "
+                "frame-ancestors 'none'",
+            )
+            self._security_headers()
+            self.send_header("Content-Length", len(body))
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
 
     def _read_body(self):
         length = int(self.headers.get("Content-Length", 0))
-        return json.loads(self.rfile.read(length)) if length else {}
+        if length > 32 * 1024 * 1024:
+            raise ValueError("corpo da requisição excede 32 MB")
+        data = json.loads(self.rfile.read(length)) if length else {}
+        if not isinstance(data, dict):
+            raise ValueError("o corpo JSON deve ser um objeto")
+        return data
 
     def do_OPTIONS(self):
-        self.send_response(204)
-        self._cors()
+        self.send_response(405)
+        self._security_headers()
         self.end_headers()
 
     def do_GET(self):
@@ -895,7 +1355,7 @@ class Handler(BaseHTTPRequestHandler):
                 "containers": {k: container_health(v) for k, v in CONTAINERS.items()},
                 "results": all_results(),
                 "benchmark_status": bs,
-                "timestamp": datetime.now().isoformat(),
+                "timestamp": datetime.now().astimezone().isoformat(),
             }
             self._json_response(data)
 
@@ -910,6 +1370,29 @@ class Handler(BaseHTTPRequestHandler):
 
         elif path == "/api/models/catalog":
             self._json_response(get_models_catalog())
+
+        elif path == "/api/containers":
+            self._json_response(container_runtime_info())
+
+        elif path == "/api/hardware-config":
+            try:
+                self._json_response(hardware_config_api())
+            except Exception as exc:
+                self._json_response({"error": str(exc)}, 500)
+
+        elif path == "/api/profiles":
+            try:
+                self._json_response(benchmark_profiles_api())
+            except Exception as exc:
+                self._json_response({"error": str(exc)}, 500)
+
+        elif path == "/api/hardware-detect":
+            try:
+                query = parse_qs(urlparse(self.path).query)
+                refresh = query.get("refresh", ["0"])[0] == "1"
+                self._json_response(detected_hardware_api(refresh=refresh))
+            except Exception as exc:
+                self._json_response({"error": str(exc)}, 500)
 
         elif path == "/api/results-html":
             qs = parse_qs(urlparse(self.path).query)
@@ -932,7 +1415,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
-        data = self._read_body()
+        try:
+            data = self._read_body()
+        except (ValueError, json.JSONDecodeError) as exc:
+            self._json_response({"error": str(exc)}, 400)
+            return
 
         if path == "/api/benchmark":
             front = data.get("front", "")
@@ -942,11 +1429,18 @@ class Handler(BaseHTTPRequestHandler):
             if front not in CONTAINERS:
                 self._json_response({"error": f"unknown front: {front}"}, 400)
                 return
-            with _lock:
-                if _benchmark_status.get(front, {}).get("running"):
-                    self._json_response({"error": "already running"}, 409)
-                    return
-            trigger_benchmark(front, profile, model=model, mode=mode)
+            try:
+                benchmark_config = _load_yaml(os.path.join(BASE, "config", "benchmark.yaml"))
+                if profile not in benchmark_config.get("profiles", {}):
+                    raise ValueError(f"perfil '{profile}' não encontrado")
+                if front == "audio" and mode not in ("asr", "tts", "pipeline"):
+                    raise ValueError("modo de áudio deve ser asr, tts ou pipeline")
+            except Exception as exc:
+                self._json_response({"error": str(exc)}, 400)
+                return
+            if not trigger_benchmark(front, profile, model=model, mode=mode):
+                self._json_response({"error": "already running"}, 409)
+                return
             self._json_response({"status": "started", "front": front, "profile": profile})
 
         elif path == "/api/switch-model":
@@ -980,17 +1474,55 @@ class Handler(BaseHTTPRequestHandler):
             result = activate_model_target(target, key)
             self._json_response(result, 200 if not result.get("error") else 400)
 
+        elif path == "/api/containers/update":
+            try:
+                self._json_response(update_container_limits(data))
+            except ValueError as exc:
+                self._json_response({"error": str(exc)}, 400)
+            except RuntimeError as exc:
+                self._json_response({"error": str(exc)}, 409)
+            except Exception as exc:
+                self._json_response({"error": str(exc)}, 500)
+
+        elif path == "/api/containers/restart":
+            try:
+                self._json_response(restart_container(str(data.get("front", ""))))
+            except ValueError as exc:
+                self._json_response({"error": str(exc)}, 400)
+            except RuntimeError as exc:
+                self._json_response({"error": str(exc)}, 409)
+
+        elif path == "/api/hardware-config":
+            try:
+                self._json_response(save_hardware_config(data))
+            except ValueError as exc:
+                self._json_response({"error": str(exc)}, 400)
+            except Exception as exc:
+                self._json_response({"error": str(exc)}, 500)
+
         elif path == "/api/inference":
-            result = do_slm_inference(data.get("prompt", ""), data.get("max_tokens", 256))
-            self._json_response(result)
+            try:
+                prompt = str(data.get("prompt", "")).strip()
+                if not prompt:
+                    raise ValueError("prompt vazio")
+                if len(prompt) > 100_000:
+                    raise ValueError("prompt excede 100.000 caracteres")
+                max_tokens = _bounded_integer(
+                    data.get("max_tokens", 256), "max_tokens", 1, 4096)
+                result = do_slm_inference(prompt, max_tokens)
+                self._json_response(result, 200 if not result.get("error") else 502)
+            except ValueError as exc:
+                self._json_response({"error": str(exc)}, 400)
 
         elif path == "/api/vision-infer":
             try:
                 image_b64 = data.get("image_base64", "")
-                image_bytes = base64.b64decode(image_b64) if image_b64 else b""
+                image_bytes = base64.b64decode(image_b64, validate=True) if image_b64 else b""
                 if not image_bytes:
                     self._json_response({"error": "imagem vazia"}, 400)
                     return
+                if len(image_bytes) > 20 * 1024 * 1024:
+                    raise ValueError("imagem excede 20 MB")
                 result = do_vision_inference(
                     data.get("model", ""),
                     data.get("filename", "image.bin"),
@@ -1002,22 +1534,26 @@ class Handler(BaseHTTPRequestHandler):
                 self._json_response({"error": str(e)}, 400)
 
         elif path == "/api/tts":
-            result = do_tts(data.get("text", ""))
-            self._json_response(result)
+            text = str(data.get("text", "")).strip()
+            if not text:
+                self._json_response({"error": "texto vazio"}, 400)
+                return
+            if len(text) > 5_000:
+                self._json_response({"error": "texto excede 5.000 caracteres"}, 400)
+                return
+            result = do_tts(text)
+            self._json_response(result, 200 if not result.get("error") else 502)
 
         elif path == "/api/config":
             yaml_text = data.get("yaml_text", "")
             cfg_path = os.path.join(BASE, "config", "benchmark.yaml")
             try:
                 import yaml
-                yaml.safe_load(yaml_text)
-                with open(cfg_path, "w") as f:
-                    f.write(yaml_text)
+                parsed = yaml.safe_load(yaml_text)
+                validate_benchmark_config(parsed)
+                with _config_lock:
+                    _atomic_write_text(cfg_path, yaml_text)
                 self._json_response({"status": "ok"})
-            except ImportError:
-                with open(cfg_path, "w") as f:
-                    f.write(yaml_text)
-                self._json_response({"status": "ok", "warning": "yaml validation skipped"})
             except Exception as e:
                 self._json_response({"error": str(e)}, 400)
 
@@ -1031,8 +1567,14 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
 
 
 if __name__ == "__main__":
-    port = 8099
-    server = ThreadedHTTPServer(("0.0.0.0", port), Handler)
-    print(f"PDC-IA Dashboard v1 -> http://localhost:{port}")
+    host = os.environ.get("PDC_DASHBOARD_HOST", "127.0.0.1")
+    port = int(os.environ.get("PDC_DASHBOARD_PORT", "8099"))
+    server = ThreadedHTTPServer((host, port), Handler)
+    print(f"PDC-IA Dashboard v1 -> http://{host}:{port}")
     print("API: /api/metrics, /api/benchmark, /api/inference, /api/vision-infer, /api/tts, /api/models/*")
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()

@@ -1,15 +1,15 @@
-"""
-capabilities.py — Detecção de hardware do sistema.
+"""Detecção portátil de hardware e sensores disponíveis."""
 
-Detecta CPU, RAM, GPU, storage, temperatura e consumo de energia.
-Funciona dentro e fora de containers Docker.
-Nunca falha: retorna null para tudo que não conseguir detectar.
-"""
-
-import platform
-import subprocess
+import csv
+import glob
+import hashlib
+import json
 import os
+import platform
 import re
+import subprocess
+import tempfile
+from datetime import datetime
 from typing import Optional
 
 try:
@@ -23,6 +23,10 @@ try:
     _PYNVML = True
 except ImportError:
     _PYNVML = False
+
+
+HARDWARE_SNAPSHOT_SCHEMA = "hardware-snapshot-2026.07-v1"
+DEFAULT_HARDWARE_SNAPSHOT_PATH = "/app/data/hardware/host.json"
 
 
 def _run_cmd(cmd: list) -> Optional[str]:
@@ -54,6 +58,12 @@ def _detect_cpu() -> dict:
             "avx512": False,
             "vnni": False,
             "fma": False,
+            "amx": False,
+            "neon": False,
+            "dotprod": False,
+            "i8mm": False,
+            "sve": False,
+            "sve2": False,
         }
     }
 
@@ -67,19 +77,33 @@ def _detect_cpu() -> dict:
     try:
         with open("/proc/cpuinfo", "r") as f:
             content = f.read()
-        # Pega modelo do primeiro processador
+        feature_set = set()
         for line in content.splitlines():
-            if "model name" in line.lower() and cpu["model"] is None:
-                cpu["model"] = line.split(":")[1].strip()
-            if "flags" in line.lower() and ":" in line:
-                flags_str = line.split(":")[1].strip().lower()
-                flags = set(flags_str.split())
-                cpu["flags"]["avx"] = "avx" in flags
-                cpu["flags"]["avx2"] = "avx2" in flags
-                cpu["flags"]["avx512"] = any(f.startswith("avx512") for f in flags)
-                cpu["flags"]["vnni"] = "avx512_vnni" in flags or "avx_vnni" in flags
-                cpu["flags"]["fma"] = "fma" in flags
-                break  # Só precisa do primeiro core
+            key, separator, value = line.partition(":")
+            if not separator:
+                continue
+            key = key.strip().lower()
+            value = value.strip()
+            if cpu["model"] is None and key in (
+                    "model name", "hardware", "processor", "cpu model"):
+                if value and not value.isdigit():
+                    cpu["model"] = value
+            if key in ("flags", "features") and not feature_set:
+                feature_set = set(value.lower().split())
+
+        cpu["flags"].update({
+            "avx": "avx" in feature_set,
+            "avx2": "avx2" in feature_set,
+            "avx512": any(flag.startswith("avx512") for flag in feature_set),
+            "vnni": "avx512_vnni" in feature_set or "avx_vnni" in feature_set,
+            "fma": "fma" in feature_set,
+            "amx": any(flag.startswith("amx_") for flag in feature_set),
+            "neon": "neon" in feature_set or "asimd" in feature_set,
+            "dotprod": "dotprod" in feature_set or "asimddp" in feature_set,
+            "i8mm": "i8mm" in feature_set,
+            "sve": "sve" in feature_set,
+            "sve2": "sve2" in feature_set,
+        })
     except Exception:
         pass
 
@@ -157,40 +181,49 @@ def _detect_ram() -> dict:
 
 
 def _detect_gpu() -> dict:
-    """
-    Detecta GPU NVIDIA via pynvml (prioritário) ou nvidia-smi (fallback).
-    Retorna null para tudo se não houver GPU NVIDIA.
-    """
+    """Detecta as GPUs NVIDIA visíveis e mantém os campos legados agregados."""
     gpu = {
         "available": False,
         "model": None,
         "vram_mb": None,
         "cuda_version": None,
         "compute_capability": None,
+        "devices": [],
     }
 
-    # Tentativa 1: pynvml (API direta NVIDIA)
     if _PYNVML:
         try:
             pynvml.nvmlInit()
             count = pynvml.nvmlDeviceGetCount()
-            if count > 0:
-                handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+            devices = []
+            cuda_version = pynvml.nvmlSystemGetCudaDriverVersion()
+            for index in range(count):
+                handle = pynvml.nvmlDeviceGetHandleByIndex(index)
+                name = pynvml.nvmlDeviceGetName(handle)
+                if isinstance(name, bytes):
+                    name = name.decode()
+                memory = pynvml.nvmlDeviceGetMemoryInfo(handle)
+                compute_capability = None
+                try:
+                    capability = pynvml.nvmlDeviceGetCudaComputeCapability(handle)
+                    compute_capability = f"{capability[0]}.{capability[1]}"
+                except Exception:
+                    pass
+                devices.append({
+                    "index": index,
+                    "model": str(name),
+                    "vram_mb": round(memory.total / (1024 ** 2)),
+                    "compute_capability": compute_capability,
+                })
+            if devices:
                 gpu["available"] = True
-                gpu["model"] = pynvml.nvmlDeviceGetName(handle)
-                # pynvml pode retornar bytes em versões antigas
-                if isinstance(gpu["model"], bytes):
-                    gpu["model"] = gpu["model"].decode()
-                mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
-                gpu["vram_mb"] = round(mem_info.total / (1024**2))
-                # Versão CUDA do driver
-                cuda_ver = pynvml.nvmlSystemGetCudaDriverVersion()
-                major = cuda_ver // 1000
-                minor = (cuda_ver % 1000) // 10
+                gpu["model"] = " / ".join(device["model"] for device in devices)
+                gpu["vram_mb"] = sum(device["vram_mb"] for device in devices)
+                major = cuda_version // 1000
+                minor = (cuda_version % 1000) // 10
                 gpu["cuda_version"] = f"{major}.{minor}"
-                # Compute capability
-                cc = pynvml.nvmlDeviceGetCudaComputeCapability(handle)
-                gpu["compute_capability"] = f"{cc[0]}.{cc[1]}"
+                gpu["compute_capability"] = devices[0]["compute_capability"]
+                gpu["devices"] = devices
             pynvml.nvmlShutdown()
             return gpu
         except Exception:
@@ -199,24 +232,37 @@ def _detect_gpu() -> dict:
             except Exception:
                 pass
 
-    # Tentativa 2: parsear saída do nvidia-smi
     try:
         out = _run_cmd(["nvidia-smi",
                         "--query-gpu=name,memory.total,driver_version",
                         "--format=csv,noheader,nounits"])
         if out:
-            parts = [p.strip() for p in out.split(",")]
-            if len(parts) >= 2:
-                gpu["available"] = True
-                gpu["model"] = parts[0]
+            devices = []
+            for index, row in enumerate(csv.reader(out.splitlines())):
+                parts = [part.strip() for part in row]
+                if len(parts) < 2:
+                    continue
                 try:
-                    gpu["vram_mb"] = int(parts[1])
-                except Exception:
-                    pass
+                    vram_mb = round(float(parts[1]))
+                except ValueError:
+                    vram_mb = None
+                devices.append({
+                    "index": index,
+                    "model": parts[0],
+                    "vram_mb": vram_mb,
+                    "compute_capability": None,
+                    "driver_version": parts[2] if len(parts) > 2 else None,
+                })
+            if devices:
+                gpu["available"] = True
+                gpu["model"] = " / ".join(device["model"] for device in devices)
+                memories = [device["vram_mb"] for device in devices
+                            if device["vram_mb"] is not None]
+                gpu["vram_mb"] = sum(memories) if memories else None
+                gpu["devices"] = devices
     except Exception:
         pass
 
-    # Versão CUDA via nvcc ou nvidia-smi
     try:
         nvcc_out = _run_cmd(["nvcc", "--version"])
         if nvcc_out:
@@ -227,6 +273,16 @@ def _detect_gpu() -> dict:
         pass
 
     return gpu
+
+
+def _base_block_device_name(device: str) -> str:
+    name = os.path.basename(device)
+    partitioned = re.fullmatch(r"(nvme\d+n\d+|mmcblk\d+|loop\d+)p\d+", name)
+    if partitioned:
+        return partitioned.group(1)
+    if re.fullmatch(r"nvme\d+n\d+|mmcblk\d+|loop\d+|dm-\d+|md\d+", name):
+        return name
+    return re.sub(r"\d+$", "", name)
 
 
 def _detect_storage() -> dict:
@@ -248,10 +304,9 @@ def _detect_storage() -> dict:
             device = out.splitlines()[-1].split()[0]
             storage["device"] = device
 
-            # Remove números do final (ex: /dev/sda1 → sda)
-            base_dev = re.sub(r'\d+$', '', device.split("/")[-1])
-            # Remove 'p' antes dos números em NVMe (ex: nvme0n1p1 → nvme0n1)
-            base_dev = re.sub(r'p\d+$', '', base_dev)
+            parent = _run_cmd(["lsblk", "-no", "PKNAME", device])
+            base_dev = parent.splitlines()[0].strip() if parent else \
+                _base_block_device_name(device)
 
             # Verifica se é NVMe
             if "nvme" in base_dev.lower():
@@ -306,6 +361,9 @@ def _detect_temperatures() -> dict:
                             zone_type = f.read().strip()
                     except Exception:
                         pass
+                    if not any(marker in zone_type.lower() for marker in (
+                            "cpu", "soc", "package", "x86_pkg", "coretemp", "k10temp")):
+                        continue
                     readings.append(temp_c)
                     temps["zones"].append({"zone": zone, "type": zone_type, "temp_c": temp_c})
                 except Exception:
@@ -323,7 +381,8 @@ def _detect_temperatures() -> dict:
             sensors = psutil.sensors_temperatures()
             if sensors:
                 all_temps = []
-                for chip, entries in sensors.items():
+                for chip in ("coretemp", "k10temp", "cpu_thermal", "soc_thermal", "zenpower"):
+                    entries = sensors.get(chip, [])
                     for entry in entries:
                         if entry.current and entry.current > 0:
                             all_temps.append(entry.current)
@@ -433,32 +492,224 @@ def _detect_power() -> dict:
     return power
 
 
+def _read_sysfs(path: str) -> Optional[str]:
+    try:
+        with open(path) as handle:
+            return handle.read().strip()
+    except OSError:
+        return None
+
+
+_NPU_DRIVER_MARKERS = ("ivpu", "xdna", "hailo", "apex", "rknpu", "ethos", "neuron", "npu")
+
+
+def _pci_accelerator_category(class_code: str, driver: Optional[str]) -> Optional[str]:
+    if driver and any(marker in driver.lower() for marker in _NPU_DRIVER_MARKERS):
+        return "npu"
+    if class_code.startswith("0x03"):
+        return "gpu"
+    if class_code.startswith("0x12"):
+        return "accelerator"
+    return None
+
+
+def _detect_accelerators() -> dict:
+    devices = []
+    for base in sorted(glob.glob("/sys/bus/pci/devices/*")):
+        class_code = (_read_sysfs(os.path.join(base, "class")) or "").lower()
+        driver_path = os.path.join(base, "driver")
+        driver = os.path.basename(os.path.realpath(driver_path)) \
+            if os.path.exists(driver_path) else None
+        category = _pci_accelerator_category(class_code, driver)
+        if category is None:
+            continue
+        devices.append({
+            "kind": "pci",
+            "category": category,
+            "address": os.path.basename(base),
+            "vendor_id": _read_sysfs(os.path.join(base, "vendor")),
+            "device_id": _read_sysfs(os.path.join(base, "device")),
+            "driver": driver,
+        })
+
+    node_patterns = {
+        "npu": (
+            "/dev/accel/accel*", "/dev/apex_*", "/dev/hailo*",
+            "/dev/rknpu*", "/dev/ethos*", "/dev/neuron*",
+        ),
+        "gpu": ("/dev/dri/renderD*",),
+    }
+    known_nodes = set()
+    for category, patterns in node_patterns.items():
+        for pattern in patterns:
+            for path in sorted(glob.glob(pattern)):
+                real_path = os.path.realpath(path)
+                if real_path in known_nodes:
+                    continue
+                known_nodes.add(real_path)
+                devices.append({
+                    "kind": "device_node",
+                    "category": category,
+                    "path": path,
+                    "driver": None,
+                })
+    return {"available": bool(devices), "devices": devices}
+
+
+def _detect_serial() -> dict:
+    by_id = sorted(glob.glob("/dev/serial/by-id/*"))
+    if by_id:
+        devices = [{"path": path, "device": os.path.realpath(path)} for path in by_id]
+    else:
+        paths = sorted(set(
+            glob.glob("/dev/ttyACM*") +
+            glob.glob("/dev/ttyUSB*") +
+            glob.glob("/dev/ttyAMA*")
+        ))
+        devices = [{"path": path, "device": path} for path in paths]
+    return {"available": bool(devices), "devices": devices}
+
+
+def hardware_fingerprint(capabilities: dict) -> str:
+    capabilities = capabilities if isinstance(capabilities, dict) else {}
+    cpu = capabilities.get("cpu") if isinstance(capabilities.get("cpu"), dict) else {}
+    ram = capabilities.get("ram") if isinstance(capabilities.get("ram"), dict) else {}
+    gpu = capabilities.get("gpu") if isinstance(capabilities.get("gpu"), dict) else {}
+    storage = capabilities.get("storage") \
+        if isinstance(capabilities.get("storage"), dict) else {}
+    accelerators = capabilities.get("accelerators")
+    accelerators = accelerators if isinstance(accelerators, dict) else {}
+    serial = capabilities.get("serial") if isinstance(capabilities.get("serial"), dict) else {}
+
+    identity = {
+        "cpu": {key: cpu.get(key) for key in (
+            "model", "arch", "cores_physical", "cores_logical", "cache_kb")},
+        "ram": {key: ram.get(key) for key in ("total_gb", "type", "speed_mhz")},
+        "gpu": {key: gpu.get(key) for key in (
+            "model", "vram_mb", "compute_capability")},
+        "accelerators": [
+            {key: device.get(key) for key in (
+                "kind", "category", "address", "path", "vendor_id", "device_id", "driver")}
+            for device in accelerators.get("devices", []) if isinstance(device, dict)
+        ],
+        "serial": [
+            {key: device.get(key) for key in ("path", "device")}
+            for device in serial.get("devices", []) if isinstance(device, dict)
+        ],
+        "storage": {key: storage.get(key) for key in ("type", "device")},
+    }
+    encoded = json.dumps(identity, ensure_ascii=True, sort_keys=True,
+                         separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()[:20]
+
+
+def save_hardware_snapshot(capabilities: dict, path: str) -> dict:
+    if not isinstance(capabilities, dict) or not capabilities:
+        raise ValueError("inventário de hardware inválido")
+    target = os.path.abspath(path)
+    directory = os.path.dirname(target)
+    os.makedirs(directory, exist_ok=True)
+    payload = {
+        "schema_version": HARDWARE_SNAPSHOT_SCHEMA,
+        "captured_at": datetime.now().astimezone().isoformat(),
+        "hardware_id": hardware_fingerprint(capabilities),
+        "hardware": capabilities,
+    }
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=directory,
+                prefix=".hardware-", suffix=".tmp", delete=False) as handle:
+            temporary = handle.name
+            json.dump(payload, handle, indent=2, ensure_ascii=False, allow_nan=False)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, target)
+        return payload
+    except Exception:
+        if temporary:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+        raise
+
+
+def load_hardware_snapshot(path: Optional[str] = None) -> Optional[dict]:
+    target = path or os.environ.get(
+        "PDC_HOST_HARDWARE_PATH", DEFAULT_HARDWARE_SNAPSHOT_PATH)
+    try:
+        if os.path.getsize(target) > 10 * 1024 * 1024:
+            return None
+        with open(target, encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("schema_version") != HARDWARE_SNAPSHOT_SCHEMA:
+        return None
+    if not isinstance(payload.get("hardware"), dict) or not payload["hardware"]:
+        return None
+    return payload
+
+
+def merge_host_capabilities(runtime_capabilities: dict,
+                            snapshot: Optional[dict] = None) -> dict:
+    runtime = runtime_capabilities if isinstance(runtime_capabilities, dict) else {}
+    runtime_visibility = runtime.get("runtime_visibility")
+    runtime_source = runtime_visibility \
+        if isinstance(runtime_visibility, dict) and runtime_visibility else runtime
+    snapshot = snapshot if snapshot is not None else load_hardware_snapshot()
+    detected_at = datetime.now().astimezone().isoformat()
+    if not snapshot:
+        merged = dict(runtime)
+        merged["provenance"] = {
+            "inventory_source": "runtime_detection",
+            "detected_at": detected_at,
+            "hardware_id": hardware_fingerprint(runtime),
+        }
+        return merged
+
+    host = snapshot["hardware"]
+    merged = dict(host)
+    runtime_gpu = runtime_source.get("gpu") \
+        if isinstance(runtime_source.get("gpu"), dict) else {}
+    host_gpu = merged.get("gpu") if isinstance(merged.get("gpu"), dict) else {}
+    if runtime_gpu.get("available") and not host_gpu.get("available"):
+        merged["gpu"] = runtime_gpu
+
+    merged["runtime_visibility"] = {
+        key: runtime_source.get(key)
+        for key in ("gpu", "accelerators", "serial", "storage")
+        if key in runtime_source
+    }
+    merged["provenance"] = {
+        "inventory_source": "host_snapshot",
+        "snapshot_schema_version": snapshot.get("schema_version"),
+        "captured_at": snapshot.get("captured_at"),
+        "detected_at": detected_at,
+        "hardware_id": snapshot.get("hardware_id") or hardware_fingerprint(host),
+    }
+    return merged
+
+
 class CapabilityDetector:
-    """
-    Detecta capacidades de hardware do sistema.
+    """Detecta hardware dentro ou fora de containers."""
 
-    Funciona dentro e fora de containers Docker.
-    Nunca levanta exceção — retorna None para tudo que não conseguir detectar.
-
-    Exemplo de uso:
-        detector = CapabilityDetector()
-        caps = detector.detect()
-        print(caps["cpu"]["model"])
-        print(caps["gpu"]["vram_mb"])
-    """
-
-    def detect(self) -> dict:
-        """
-        Executa todas as detecções e retorna dicionário completo.
-
-        Retorna:
-            dict com chaves: cpu, ram, gpu, storage, temperature, power
-        """
-        return {
+    def detect(self, use_host_snapshot: bool = True) -> dict:
+        """Retorna as capacidades disponíveis sem exigir cada sensor."""
+        detected = {
             "cpu": _detect_cpu(),
             "ram": _detect_ram(),
             "gpu": _detect_gpu(),
+            "accelerators": _detect_accelerators(),
+            "serial": _detect_serial(),
             "storage": _detect_storage(),
             "temperature": _detect_temperatures(),
             "power": _detect_power(),
         }
+        return merge_host_capabilities(detected) if use_host_snapshot \
+            else merge_host_capabilities(detected, snapshot={})

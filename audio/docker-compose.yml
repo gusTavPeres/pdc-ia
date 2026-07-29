@@ -1,11 +1,12 @@
 services:
   pdc-audio:
+    image: pdc-audio:${PDC_IMAGE_VARIANT:-cpu}
     build:
       context: ..
       dockerfile: audio/Dockerfile
     container_name: pdc-audio
     ports:
-      - "8012:8000"
+      - "127.0.0.1:8012:8000"
     volumes:
       - ../config:/app/config:ro
       - ../data:/app/data
@@ -14,6 +15,15 @@ services:
       - /sys:/sys:ro
     environment:
       - PDC_FRONT=audio
-      - PDC_GPU_MODE=${PDC_GPU_MODE:-auto}
-    shm_size: "256m"
+      - PDC_GPU_MODE=${PDC_GPU_MODE:-cpu}
+      - PDC_IMAGE_VARIANT=${PDC_IMAGE_VARIANT:-cpu}
+    shm_size: ${PDC_SHM_SIZE:-256m}
+    cpus: ${PDC_CPU_LIMIT:-0}
+    mem_limit: ${PDC_MEMORY_LIMIT:-0}
+    pids_limit: ${PDC_PIDS_LIMIT:--1}
+    init: true
     restart: unless-stopped
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -25,6 +25,43 @@ FRONTS = {
 BASE_DIR = Path(__file__).parent.resolve()
 
 
+def _positive_int(value):
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError("deve ser um número inteiro")
+    if number <= 0:
+        raise argparse.ArgumentTypeError("deve ser maior que zero")
+    return number
+
+
+try:
+    DEFAULT_BENCHMARK_TIMEOUT = _positive_int(
+        os.environ.get("PDC_BENCHMARK_TIMEOUT_SEC", "21600"))
+except argparse.ArgumentTypeError:
+    DEFAULT_BENCHMARK_TIMEOUT = 21_600
+
+
+def _use_project_venv():
+    venv_dir = BASE_DIR / ".venv"
+    python = BASE_DIR / ".venv" / "bin" / "python"
+    if python.is_file() and Path(sys.prefix).resolve() != venv_dir.resolve():
+        os.execv(str(python), [str(python), str(Path(__file__).resolve()), *sys.argv[1:]])
+
+
+_use_project_venv()
+
+
+def _capture_host_hardware():
+    sys.path.insert(0, str(BASE_DIR))
+    from shared.capabilities import CapabilityDetector, save_hardware_snapshot
+
+    capabilities = CapabilityDetector().detect(use_host_snapshot=False)
+    path = BASE_DIR / "data" / "hardware" / "host.json"
+    payload = save_hardware_snapshot(capabilities, str(path))
+    return capabilities, payload, path
+
+
 def ok(msg):
     print(f"{GREEN}✓ {msg}{RESET}")
 
@@ -54,9 +91,11 @@ def _has_nvidia_gpu():
             stderr=subprocess.DEVNULL,
             timeout=3,
         )
-        return result.returncode == 0
+        if result.returncode == 0:
+            return True
     except Exception:
-        return False
+        pass
+    return False
 
 
 def _compose_cmd(front, gpu_enabled=False):
@@ -68,6 +107,65 @@ def _compose_cmd(front, gpu_enabled=False):
     return cmd
 
 
+def _container_limits(front):
+    defaults = {"cpu_limit": 0, "memory_limit_mb": 0, "pids_limit": 0}
+    path = BASE_DIR / "config" / "container_limits.yaml"
+    try:
+        import yaml
+        with open(path) as handle:
+            config = yaml.safe_load(handle) or {}
+        values = config.get(front, {})
+        return {key: values.get(key, default) for key, default in defaults.items()}
+    except (OSError, ValueError, TypeError, ImportError):
+        return defaults
+
+
+def _runtime_env(gpu_enabled, front):
+    env = os.environ.copy()
+    env["PDC_GPU_MODE"] = "auto" if gpu_enabled else "cpu"
+    env["PDC_IMAGE_VARIANT"] = "gpu" if gpu_enabled else "cpu"
+    limits = _container_limits(front)
+    env["PDC_CPU_LIMIT"] = str(limits["cpu_limit"] or 0)
+    env["PDC_MEMORY_LIMIT"] = (
+        f"{limits['memory_limit_mb']}m" if limits["memory_limit_mb"] else "0"
+    )
+    env["PDC_PIDS_LIMIT"] = str(limits["pids_limit"] or -1)
+    return env
+
+
+def cmd_setup(_args):
+    """Cria o ambiente Python usado pelo CLI e pelo dashboard."""
+    venv_dir = BASE_DIR / ".venv"
+    if not (venv_dir / "bin" / "python").is_file():
+        info("Criando .venv...")
+        result = subprocess.run([sys.executable, "-m", "venv", str(venv_dir)])
+        if result.returncode != 0:
+            err("Não foi possível criar .venv. Instale o pacote python3-venv.")
+            raise SystemExit(1)
+
+    python = venv_dir / "bin" / "python"
+    requirements = BASE_DIR / "shared" / "requirements.txt"
+    info("Instalando dependências do host...")
+    result = subprocess.run([
+        str(python), "-m", "pip", "install", "--disable-pip-version-check",
+        "-r", str(requirements),
+    ])
+    if result.returncode != 0:
+        err("Falha ao instalar as dependências do host")
+        raise SystemExit(1)
+    ok("Ambiente pronto")
+
+
+def cmd_dashboard(_args):
+    """Executa o dashboard no processo atual."""
+    server = BASE_DIR / "metrics_server.py"
+    try:
+        returncode = subprocess.run([sys.executable, str(server)], cwd=BASE_DIR).returncode
+    except KeyboardInterrupt:
+        returncode = 0
+    raise SystemExit(returncode)
+
+
 def cmd_detect(args):
     """Detecta e exibe capacidades de hardware do sistema."""
     sys.path.insert(0, str(BASE_DIR))
@@ -77,30 +175,46 @@ def cmd_detect(args):
         err("shared/capabilities.py não encontrado. Execute a partir do diretório ~/pdc-ia/")
         sys.exit(1)
 
+    caps = CapabilityDetector().detect(use_host_snapshot=False)
+
+    def save_detection():
+        from shared.capabilities import save_hardware_snapshot
+
+        out_file = BASE_DIR / "data" / "hardware" / "host.json"
+        save_hardware_snapshot(caps, str(out_file))
+        return out_file
+
+    if args.json:
+        if args.save:
+            save_detection()
+        print(json.dumps(caps, indent=2, ensure_ascii=False, allow_nan=False))
+        return
+
     header("Detecção de Hardware")
-    caps = CapabilityDetector().detect()
 
     cpu = caps.get("cpu", {})
     ram = caps.get("ram", {})
     gpu = caps.get("gpu", {})
+    accelerators = caps.get("accelerators", {})
+    serial = caps.get("serial", {})
     storage = caps.get("storage", {})
     temp = caps.get("temperature", {})
     power = caps.get("power", {})
 
     print(f"\n{BOLD}CPU{RESET}")
-    print(f"  Modelo:   {cpu.get('model', 'desconhecido')}")
-    print(f"  Arch:     {cpu.get('arch', '?')}")
-    print(f"  Cores:    {cpu.get('cores_physical', '?')} físicos / {cpu.get('cores_logical', '?')} lógicos")
-    print(f"  Freq:     {cpu.get('freq_mhz', '?')} MHz")
-    print(f"  Cache L3: {cpu.get('cache_kb', '?')} KB")
+    print(f"  Modelo:   {cpu.get('model') or 'desconhecido'}")
+    print(f"  Arch:     {cpu.get('arch') or '?'}")
+    print(f"  Cores:    {cpu.get('cores_physical') or '?'} físicos / {cpu.get('cores_logical') or '?'} lógicos")
+    print(f"  Freq:     {cpu.get('freq_mhz') or '?'} MHz")
+    print(f"  Cache L3: {cpu.get('cache_kb') or '?'} KB")
     flags = cpu.get("flags", {})
     active = [k for k, v in flags.items() if v]
     print(f"  Flags IA: {', '.join(active) if active else 'nenhuma'}")
 
     print(f"\n{BOLD}RAM{RESET}")
-    print(f"  Total:      {ram.get('total_gb', '?')} GB")
-    print(f"  Disponível: {ram.get('available_gb', '?')} GB")
-    print(f"  Tipo:       {ram.get('type', 'desconhecido')} @ {ram.get('speed_mhz', '?')} MHz")
+    print(f"  Total:      {ram.get('total_gb') or '?'} GiB")
+    print(f"  Disponível: {ram.get('available_gb') or '?'} GiB")
+    print(f"  Tipo:       {ram.get('type') or 'desconhecido'} @ {ram.get('speed_mhz') or '?'} MHz")
 
     print(f"\n{BOLD}GPU{RESET}")
     if gpu.get("available"):
@@ -111,9 +225,27 @@ def cmd_detect(args):
     else:
         warn("  GPU NVIDIA não detectada (CPU-only)")
 
+    print(f"\n{BOLD}Aceleradores{RESET}")
+    accelerator_devices = accelerators.get("devices", [])
+    if accelerator_devices:
+        for device in accelerator_devices:
+            location = device.get("address") or device.get("path") or "?"
+            driver = device.get("driver") or "sem driver identificado"
+            print(f"  {device.get('category', '?'):12} {location:20} {driver}")
+    else:
+        print("  Nenhum acelerador PCI ou device node identificado")
+
+    print(f"\n{BOLD}Serial{RESET}")
+    serial_devices = serial.get("devices", [])
+    if serial_devices:
+        for device in serial_devices:
+            print(f"  {device.get('path')} -> {device.get('device')}")
+    else:
+        print("  Nenhuma interface serial identificada")
+
     print(f"\n{BOLD}Storage{RESET}")
-    print(f"  Tipo:        {storage.get('type', 'desconhecido')}")
-    print(f"  Dispositivo: {storage.get('device', '?')}")
+    print(f"  Tipo:        {storage.get('type') or 'desconhecido'}")
+    print(f"  Dispositivo: {storage.get('device') or '?'}")
 
     if temp.get("cpu_avg_c"):
         print(f"\n{BOLD}Temperatura{RESET}")
@@ -125,34 +257,39 @@ def cmd_detect(args):
         if power.get("dram_watts"):
             print(f"  DRAM:    {power.get('dram_watts')} W")
 
-    if args.json:
-        print(f"\n{BOLD}JSON completo:{RESET}")
-        print(json.dumps(caps, indent=2))
-
     if args.save:
-        out_file = BASE_DIR / "results" / "hardware_detect.json"
-        out_file.parent.mkdir(exist_ok=True)
-        with open(out_file, "w") as f:
-            json.dump(caps, f, indent=2)
+        out_file = save_detection()
         ok(f"Salvo em {out_file}")
 
 
 def cmd_build(args):
     """Constrói imagens Docker das frentes."""
     fronts = list(FRONTS.keys()) if args.front == "all" else [args.front]
+    if args.cpu and args.gpu:
+        err("Use apenas um modo: --cpu ou --gpu")
+        raise SystemExit(1)
+    if args.gpu and not _has_nvidia_gpu():
+        warn("nvidia-smi não está funcional; a variante GPU pode não iniciar")
+    gpu_enabled = args.gpu or (not args.cpu and _has_nvidia_gpu())
+    failures = 0
     for front in fronts:
         if front not in FRONTS:
             err(f"Frente desconhecida: {front}. Use: {', '.join(FRONTS.keys())} ou all")
             sys.exit(1)
-        info(f"Building {front}...")
+        info(f"Construindo {front} ({'GPU' if gpu_enabled else 'CPU'})...")
+        env = _runtime_env(gpu_enabled, front)
         result = subprocess.run(
-            _compose_cmd(front) + ["build"],
-            cwd=BASE_DIR
+            _compose_cmd(front, gpu_enabled=gpu_enabled) + ["build"],
+            cwd=BASE_DIR,
+            env=env,
         )
         if result.returncode == 0:
             ok(f"{front} build OK")
         else:
             err(f"{front} build FALHOU")
+            failures += 1
+    if failures:
+        raise SystemExit(1)
 
 
 def cmd_up(args):
@@ -161,25 +298,36 @@ def cmd_up(args):
     if args.cpu and args.gpu:
         err("Use apenas um modo: --cpu ou --gpu")
         sys.exit(1)
+    if args.gpu and not _has_nvidia_gpu():
+        warn("nvidia-smi não está funcional; a variante GPU pode não iniciar")
     gpu_enabled = args.gpu or (not args.cpu and _has_nvidia_gpu())
-    env = os.environ.copy()
-    env["PDC_GPU_MODE"] = "auto" if gpu_enabled else "cpu"
+    try:
+        _, snapshot, _ = _capture_host_hardware()
+        info(f"Inventário físico: {snapshot['hardware_id']}")
+    except Exception as exc:
+        warn(f"Não foi possível atualizar o inventário físico: {exc}")
+    failures = 0
     for front in fronts:
         if front not in FRONTS:
             err(f"Frente desconhecida: {front}")
             sys.exit(1)
         cmd = _compose_cmd(front, gpu_enabled=gpu_enabled) + ["up", "-d"]
         info(f"Subindo {front} ({'GPU' if gpu_enabled else 'CPU'})...")
+        env = _runtime_env(gpu_enabled, front)
         result = subprocess.run(cmd, cwd=BASE_DIR, env=env)
         if result.returncode == 0:
             ok(f"{front} subiu")
         else:
             err(f"{front} falhou ao subir")
+            failures += 1
+    if failures:
+        raise SystemExit(1)
 
 
 def cmd_down(args):
     """Para containers Docker."""
     fronts = list(FRONTS.keys()) if args.front == "all" else [args.front]
+    failures = 0
     for front in fronts:
         if front not in FRONTS:
             err(f"Frente desconhecida: {front}")
@@ -190,12 +338,17 @@ def cmd_down(args):
         )
         if result.returncode == 0:
             ok(f"{front} parado")
+        else:
+            err(f"{front} falhou ao parar")
+            failures += 1
+    if failures:
+        raise SystemExit(1)
 
 
 def cmd_status(args):
     """Exibe status de todos os containers PDC."""
-    import urllib.request
     import urllib.error
+    import urllib.request
 
     header("Status dos Containers PDC")
 
@@ -206,11 +359,25 @@ def cmd_status(args):
             with urllib.request.urlopen(f"http://localhost:{port}/health", timeout=3) as r:
                 data = json.loads(r.read())
             status = data.get("status", "?")
-            model = data.get("model") or data.get("asr", "?")
-            device = data.get("device", "?")
+            if front == "audio":
+                model = f"ASR: {data.get('asr', '?')} / TTS: {data.get('tts', '?')}"
+            else:
+                model = data.get("model", "?")
             gpu = "GPU" if data.get("gpu") else "CPU"
             color = GREEN if status == "ok" else YELLOW
             print(f"  {color}{front:8}{RESET}  :{port}  {status:8}  {model}  [{gpu}]")
+        except urllib.error.HTTPError as exc:
+            try:
+                data = json.loads(exc.read())
+            except Exception:
+                data = {}
+            status = data.get("status", "degraded")
+            if front == "audio":
+                model = f"ASR: {data.get('asr', '?')} / TTS: {data.get('tts', '?')}"
+            else:
+                model = data.get("model", "?")
+            print(f"  {YELLOW}{front:8}{RESET}  :{port}  {status:8}  {model}")
+            all_ok = False
         except Exception:
             print(f"  {RED}{front:8}{RESET}  :{port}  {RED}OFFLINE{RESET}")
             all_ok = False
@@ -219,33 +386,49 @@ def cmd_status(args):
         print(f"\n{GREEN}Todos os containers estão rodando!{RESET}")
     else:
         print(f"\n{YELLOW}Alguns containers estão offline. Use './pdc up <front>' para subir.{RESET}")
+        raise SystemExit(1)
 
 
 def cmd_benchmark(args):
     """Executa benchmark em um ou todos os containers."""
-    import urllib.request
     import urllib.error
+    import urllib.request
 
     fronts = list(FRONTS.keys()) if args.front == "all" else [args.front]
     profile = "quick" if args.quick else getattr(args, "profile", "quick") or "quick"
+    mode = getattr(args, "mode", None)
+    if mode and args.front not in ("audio", "all"):
+        err("--mode é válido apenas para a frente audio ou all")
+        raise SystemExit(1)
 
+    try:
+        _, snapshot, _ = _capture_host_hardware()
+        info(f"Inventário físico atualizado: {snapshot['hardware_id']}")
+    except Exception as exc:
+        warn(f"Benchmark seguirá sem atualizar o inventário físico: {exc}")
+
+    failures = 0
     for front in fronts:
         if front not in FRONTS:
             err(f"Frente desconhecida: {front}")
             continue
 
         port = FRONTS[front]["port"]
-        info(f"Benchmark {front} (perfil: {profile})...")
+        mode_label = f", modo: {mode}" if front == "audio" and mode else ""
+        info(f"Benchmark {front} (perfil: {profile}{mode_label})...")
 
         try:
-            payload = json.dumps({"profile": profile}).encode()
+            request_data = {"profile": profile}
+            if front == "audio" and mode:
+                request_data["mode"] = mode
+            payload = json.dumps(request_data).encode()
             req = urllib.request.Request(
                 f"http://localhost:{port}/benchmark",
                 data=payload,
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=600) as r:
+            with urllib.request.urlopen(req, timeout=args.timeout) as r:
                 result = json.loads(r.read())
 
             bench = result.get("benchmark_results", {})
@@ -271,6 +454,9 @@ def cmd_benchmark(args):
 
         except Exception as e:
             err(f"{front} benchmark falhou: {e}")
+            failures += 1
+    if failures:
+        raise SystemExit(1)
 
 
 def cmd_results(args):
@@ -280,26 +466,81 @@ def cmd_results(args):
         warn("Nenhum resultado ainda. Execute './pdc benchmark <front>'")
         return
 
-    json_files = sorted(results_dir.glob("*.json"), key=lambda f: f.stat().st_mtime, reverse=True)
+    sys.path.insert(0, str(BASE_DIR))
+    from shared.result_parser import is_benchmark_result
+
+    candidates = sorted(
+        results_dir.glob("*.json"), key=lambda f: f.stat().st_mtime, reverse=True)
+    json_files = []
+    for path in candidates:
+        try:
+            with open(path, encoding="utf-8") as handle:
+                if is_benchmark_result(json.load(handle)):
+                    json_files.append(path)
+        except (OSError, json.JSONDecodeError):
+            continue
     if not json_files:
         warn("Nenhum resultado encontrado em results/")
+        return
+
+    if args.compare:
+        from shared.result_parser import load_result_file, normalize_result
+        from shared.scorecard import compute_scorecard, load_hardware_config
+
+        rows = []
+        hardware_config = load_hardware_config(str(BASE_DIR / "config" / "hardware.yaml"))
+        results_root = results_dir.resolve()
+        for name in args.compare:
+            path = (results_dir / name).resolve()
+            if not path.is_relative_to(results_root) or not path.is_file():
+                err(f"Resultado não encontrado: {name}")
+                raise SystemExit(1)
+            try:
+                raw, _row = load_result_file(str(path))
+                if not is_benchmark_result(raw):
+                    raise ValueError("arquivo não contém um benchmark")
+                raw["scorecard"] = compute_scorecard(raw, hardware_config)
+                row = normalize_result(raw, filename=str(path))
+            except (OSError, json.JSONDecodeError, ValueError) as exc:
+                err(f"Resultado inválido: {name} ({exc})")
+                raise SystemExit(1)
+            rows.append(row)
+
+        header("Comparação de Resultados")
+        print(f"  {'Métrica':28} {args.compare[0]:>24} {args.compare[1]:>24}")
+        fields = (
+            ("Throughput (ops/s)", "throughput_ops"),
+            ("Latência p50 (ms)", "p50_ms"),
+            ("Latência p95 (ms)", "p95_ms"),
+            ("RAM pico (MB)", "peak_ram_mb"),
+            ("RAM delta (MB)", "peak_ram_delta_mb"),
+            ("VRAM pico (MB)", "peak_vram_mb"),
+            ("VRAM delta (MB)", "peak_vram_delta_mb"),
+            ("GPU média (%)", "avg_gpu_pct"),
+            ("Energia (J)", "energy_j"),
+            ("Energia/unidade (J)", "energy_per_primary_unit_j"),
+            ("Score", "performance_score"),
+            ("Custo/1k", "cost_per_1k"),
+        )
+        for label, key in fields:
+            values = ["—" if row.get(key) is None else f"{row[key]:.6g}" for row in rows]
+            print(f"  {label:28} {values[0]:>24} {values[1]:>24}")
         return
 
     if getattr(args, "scorecard", False):
         header("Scorecards")
         sys.path.insert(0, str(BASE_DIR))
-        try:
-            from shared.scorecard import compute_scorecard, load_hardware_config
-            hw_cfg = load_hardware_config(str(BASE_DIR / "config" / "hardware.yaml"))
-        except Exception:
-            compute_scorecard = None
-            hw_cfg = {}
+        from shared.scorecard import compute_scorecard, load_hardware_config
+
+        hw_cfg = load_hardware_config(str(BASE_DIR / "config" / "hardware.yaml"))
         for f in json_files[:20]:
-            with open(f) as fp:
-                data = json.load(fp)
-            sc = data.get("scorecard", {})
-            if not sc and compute_scorecard:
-                sc = compute_scorecard(data, hw_cfg)
+            try:
+                with open(f) as fp:
+                    data = json.load(fp)
+            except (OSError, json.JSONDecodeError) as exc:
+                warn(f"{f.name}: resultado inválido ({exc})")
+                continue
+            sc = compute_scorecard(data, hw_cfg)
             primary = sc.get("primary_metric", {})
             score = sc.get("performance_score")
             eff = sc.get("efficiency", {})
@@ -308,13 +549,17 @@ def cmd_results(args):
             if primary.get("value") is not None:
                 metric = f"{primary['value']:.3f} {primary.get('unit', '')}"
             print(f"  {f.name:45}  score={score if score is not None else '—'}  metric={metric}  "
-                  f"J/op={eff.get('energy_per_op_j', '—')}  cost/1k={cost.get('cost_per_1k_primary_units', '—')}")
+                  f"J/unid={eff.get('energy_per_primary_unit_j', '—')}  "
+                  f"cost/1k={cost.get('cost_per_1k_primary_units', '—')}")
         return
 
     if args.latest:
-        # Mostra o arquivo mais recente
-        with open(json_files[0]) as f:
-            data = json.load(f)
+        try:
+            with open(json_files[0]) as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError) as exc:
+            err(f"Resultado inválido: {json_files[0].name} ({exc})")
+            raise SystemExit(1)
         print(json.dumps(data, indent=2))
         return
 
@@ -327,7 +572,11 @@ def cmd_results(args):
 
 def cmd_models(args):
     """Gerencia modelos disponíveis."""
-    import yaml
+    try:
+        import yaml
+    except ImportError:
+        err("PyYAML não está instalado. Execute './pdc setup'.")
+        raise SystemExit(1)
 
     config_file = BASE_DIR / "config" / "models.yaml"
     if not config_file.exists():
@@ -348,10 +597,11 @@ def cmd_models(args):
         for front, rows in grouped.items():
             print(f"\n{BOLD}{front.upper()}{RESET}")
             for name, model_cfg, is_default in rows:
-                tag = f" {GREEN}[default]{RESET}" if is_default else ""
+                tag = f" {GREEN}[padrão]{RESET}" if is_default else ""
                 print(f"  {name}{tag}")
                 print(f"    {model_cfg.get('description', '')}")
-                print(f"    Tamanho: {model_cfg.get('size_mb', '?')} MB  GPU: {model_cfg.get('gpu_capable', False)}")
+                gpu_support = "sim" if model_cfg.get("gpu_capable", False) else "não"
+                print(f"    Tamanho: {model_cfg.get('size_mb', '?')} MB  GPU: {gpu_support}")
 
     elif args.models_cmd == "download":
         sys.path.insert(0, str(BASE_DIR))
@@ -426,7 +676,10 @@ def _model_download_items(model_cfg):
         filename = model_cfg.get("filename") if key in ("url", "model_url") else None
         if not filename:
             filename = url.split("/")[-1].split("?")[0]
-        items.append({"url": url, "filename": filename})
+        item = {"url": url, "filename": filename}
+        if key in ("url", "model_url") and model_cfg.get("sha256"):
+            item["sha256"] = model_cfg["sha256"]
+        items.append(item)
     return items
 
 
@@ -438,14 +691,20 @@ def main():
     )
     sub = parser.add_subparsers(dest="command")
 
+    sub.add_parser("setup", help="Prepara o ambiente Python local")
+    sub.add_parser("dashboard", help="Inicia o dashboard local")
+
     # detect
     p_detect = sub.add_parser("detect", help="Detecta hardware do sistema")
     p_detect.add_argument("--json", action="store_true", help="Exibe saída em JSON")
-    p_detect.add_argument("--save", action="store_true", help="Salva resultado em results/")
+    p_detect.add_argument(
+        "--save", action="store_true", help="Salva o inventário em data/hardware/")
 
     # build
     p_build = sub.add_parser("build", help="Constrói containers")
     p_build.add_argument("front", help="Nome da frente (vision|slm|audio|all)")
+    p_build.add_argument("--gpu", action="store_true", help="Constrói variante NVIDIA")
+    p_build.add_argument("--cpu", action="store_true", help="Constrói variante CPU portátil")
 
     # up
     p_up = sub.add_parser("up", help="Sobe containers")
@@ -465,6 +724,15 @@ def main():
     p_bench.add_argument("front", help="Nome da frente ou 'all'")
     p_bench.add_argument("--quick", action="store_true", help="Perfil rápido (30s)")
     p_bench.add_argument("--profile", help="Perfil: express|quick|standard|extended")
+    p_bench.add_argument(
+        "--mode", choices=("asr", "tts", "pipeline"),
+        help="Modo da frente de áudio (padrão: pipeline)",
+    )
+    p_bench.add_argument(
+        "--timeout", type=_positive_int,
+        default=DEFAULT_BENCHMARK_TIMEOUT,
+        help="Tempo máximo por frente em segundos (padrão: 21600)",
+    )
 
     # results
     p_res = sub.add_parser("results", help="Lista resultados")
@@ -495,7 +763,11 @@ def main():
 
     args = parser.parse_args()
 
-    if args.command == "detect":
+    if args.command == "setup":
+        cmd_setup(args)
+    elif args.command == "dashboard":
+        cmd_dashboard(args)
+    elif args.command == "detect":
         cmd_detect(args)
     elif args.command == "build":
         cmd_build(args)

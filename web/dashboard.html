@@ -3,7 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Hardware Tester AI</title>
+<title>PDC-IA Hardware Tester</title>
+<link rel="icon" href="data:,">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
 :root{--bg:#101010;--card:#171717;--card2:#202020;--border:#303030;--accent:#0f766e;--accent2:#14b8a6;
@@ -18,13 +19,13 @@ a{color:var(--accent2);text-decoration:none}
 
 /* Layout */
 .header{padding:16px 24px;display:flex;align-items:center;gap:16px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--bg);z-index:100}
-.header h1{font-size:1.2rem;font-weight:700;color:var(--text)}
-.header .tag{font-size:.7rem;padding:2px 8px;border-radius:8px;background:var(--accent);color:#fff;font-weight:600}
+.header h1{font-size:1.2rem;font-weight:700;color:var(--text);white-space:nowrap;flex-shrink:0}
+.header .tag{font-size:.7rem;padding:2px 8px;border-radius:8px;background:var(--accent);color:#fff;font-weight:600;flex-shrink:0}
 .header .spacer{flex:1}
-.header .clock{font-size:.8rem;color:var(--sub);font-variant-numeric:tabular-nums}
+.header .clock{font-size:.8rem;color:var(--sub);font-variant-numeric:tabular-nums;flex-shrink:0}
 
-.tabs{display:flex;gap:0;border-bottom:1px solid var(--border);padding:0 24px;background:var(--card)}
-.tab{padding:10px 20px;font-size:.85rem;color:var(--sub);cursor:pointer;border-bottom:2px solid transparent;transition:all .2s}
+.tabs{display:flex;gap:0;border-bottom:1px solid var(--border);padding:0 24px;background:var(--card);max-width:100vw;overflow-x:auto;overscroll-behavior-x:contain}
+.tab{padding:10px 20px;font-size:.85rem;color:var(--sub);cursor:pointer;border-bottom:2px solid transparent;transition:all .2s;white-space:nowrap;flex:0 0 auto}
 .tab:hover{color:var(--text)}
 .tab.active{color:var(--accent);border-bottom-color:var(--accent)}
 
@@ -105,6 +106,8 @@ canvas{max-height:180px}
 .compare-grid .val.better{color:var(--green);font-weight:600}
 .compare-grid .val.worse{color:var(--red)}
 .compare-grid .header{padding:8px 12px;background:var(--accent);color:#fff;font-weight:700;text-align:center;font-size:.78rem;text-transform:uppercase}
+.compare-note{font-size:.78rem;line-height:1.45;padding:9px 11px;margin-bottom:12px;border-left:3px solid var(--yellow);background:#1d1b13;color:#d4d4d4}
+.compare-note.ok{border-color:var(--green);background:#10201b}
 
 .log-box{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px;font-family:'Fira Code','Cascadia Code',monospace;font-size:.75rem;color:var(--sub);max-height:200px;overflow-y:auto;white-space:pre-wrap}
 
@@ -120,6 +123,25 @@ canvas{max-height:180px}
 .vision-box{position:absolute;border:2px solid var(--accent2);background:rgba(20,184,166,.14);border-radius:4px;overflow:hidden}
 .vision-box span{position:absolute;left:0;top:0;background:rgba(10,12,16,.9);color:#fff;font-size:.68rem;padding:2px 6px}
 .metric-help{cursor:help;border-bottom:1px dotted #737373}
+.table-wrap{width:100%;overflow-x:auto}
+.results-charts{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.runtime-input{width:92px;min-width:72px}
+.form-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.form-field{display:flex;flex-direction:column;gap:4px;min-width:0}
+.form-field label{font-size:.74rem;color:var(--sub)}
+.form-field input{width:100%;min-width:0}
+.form-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px}
+@media(max-width:900px){.form-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:560px){.form-grid{grid-template-columns:1fr}}
+@media(max-width:700px){.results-charts{grid-template-columns:1fr}}
+@media(max-width:560px){
+  .header{padding:12px 14px;gap:10px}
+  .header h1{font-size:1rem}
+  .tabs{padding:0 8px}
+  .tab{padding:10px 12px;font-size:.8rem}
+  .page{padding:14px 12px}
+  .card{padding:14px}
+}
 </style>
 </head>
 <body>
@@ -208,7 +230,7 @@ canvas{max-height:180px}
   <div class="grid g2" style="margin-bottom:14px">
     <div class="card">
       <h2>Vision — Detecção de Objetos</h2>
-      <p style="font-size:.8rem;color:var(--sub);margin-bottom:10px">YOLOv8 — imagens sintéticas 640×640</p>
+      <p style="font-size:.8rem;color:var(--sub);margin-bottom:10px">YOLO — imagens sintéticas 640×640</p>
       <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:10px">
         <div style="display:flex;gap:8px;align-items:center">
           <span style="font-size:.78rem;color:var(--sub);width:55px">Modelo:</span>
@@ -290,11 +312,24 @@ canvas{max-height:180px}
       </div>
       <div id="bench-audio-tts-status"></div>
     </div>
+    <div class="card">
+      <h2>Audio — Pipeline TTS + ASR</h2>
+      <p style="font-size:.8rem;color:var(--sub);margin-bottom:10px">Síntese, transcrição e WER na mesma execução</p>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:10px">
+        <div style="display:flex;gap:8px;align-items:center">
+          <span style="font-size:.78rem;color:var(--sub);width:55px">Perfil:</span>
+          <select id="bench-audio-pipeline-profile" style="flex:1"></select>
+        </div>
+        <div class="field-hint">Usa os modelos selecionados nos testes ASR e TTS.</div>
+        <button class="btn primary" onclick="runBenchAudio('pipeline')" id="btn-bench-audio-pipeline">Executar Pipeline</button>
+      </div>
+      <div id="bench-audio-pipeline-status"></div>
+    </div>
   </div>
   <div class="card">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
       <h2 style="margin:0">Executar Todos</h2>
-      <button class="btn primary" onclick="runAllBench()">Benchmark Completo</button>
+      <button class="btn primary" id="btn-bench-all" onclick="runAllBench()">Benchmark Completo</button>
     </div>
     <div id="bench-all-log" class="log-box" style="min-height:80px">Aguardando...</div>
   </div>
@@ -372,27 +407,36 @@ canvas{max-height:180px}
     </div>
     <div style="font-size:.74rem;color:var(--dim);margin:-4px 0 10px 0">Passe o mouse sobre os títulos das métricas para ver definição e método de cálculo.</div>
     <div style="overflow-x:auto;overflow-y:auto;max-height:60vh">
-      <div style="min-width:920px">
+      <div style="min-width:1542px">
         <div style="display:flex;padding:0 0 6px 0;border-bottom:1px solid #303030;font-size:.68rem;font-weight:700;color:#737373;text-transform:uppercase;letter-spacing:.05em">
           <div style="flex:0 0 88px">Data/Hora</div>
           <div style="flex:0 0 56px">Front</div>
           <div style="flex:1;min-width:150px">Modelo</div>
           <div style="flex:0 0 62px">Perfil</div>
+          <div style="flex:0 0 88px" class="metric-help" title="Métrica principal da carga: frames/s em visão, tokens/s em SLM e velocidade relativa ao tempo real em áudio. É calculada a partir do total produzido dividido pela duração da fase.">Primária</div>
           <div style="flex:0 0 82px" class="metric-help" title="Throughput: número de inferências concluídas por segundo durante a janela do teste de throughput, desconsiderando o warmup.">ops/s</div>
           <div style="flex:0 0 58px" class="metric-help" title="Latência p50: mediana das amostras individuais coletadas no teste de latência.">p50ms</div>
           <div style="flex:0 0 58px" class="metric-help" title="Latência p95: percentil 95 das amostras individuais do teste de latência.">p95ms</div>
           <div style="flex:0 0 58px" class="metric-help" title="Latência p99: percentil 99 das amostras individuais do teste de latência.">p99ms</div>
           <div style="flex:0 0 58px" class="metric-help" title="Desvio padrão da latência: dispersão entre as amostras do teste de latência.">σ ms</div>
-          <div style="flex:0 0 68px" class="metric-help" title="Pico de RAM observado durante o teste de uso de recursos, em megabytes.">RAM</div>
-          <div style="flex:0 0 52px" class="metric-help" title="Maior utilização percentual de GPU observada durante o teste de uso de recursos.">GPU%</div>
-          <div style="flex:0 0 64px" class="metric-help" title="Maior uso de VRAM observado durante o teste de uso de recursos, em megabytes.">VRAM</div>
+          <div style="flex:0 0 68px" class="metric-help" title="Pico do working set do container. Sem cgroup disponível, usa o RSS da árvore de processos. Resultados antigos exibem o escopo no próprio valor.">RAM</div>
+          <div style="flex:0 0 62px" class="metric-help" title="Diferença entre o pico de RAM e o baseline coletado antes da fase de uso de recursos.">Δ RAM</div>
+          <div style="flex:0 0 62px" class="metric-help" title="Média de CPU na fase de recursos. Cada 100% corresponde a um núcleo ocupado; o valor pode superar 100% em cargas paralelas.">CPU%</div>
+          <div style="flex:0 0 52px" class="metric-help" title="Pico de GPU dos processos da carga quando o NVML oferece telemetria por PID; caso contrário, usa o pico dos dispositivos visíveis.">GPU%</div>
+          <div style="flex:0 0 64px" class="metric-help" title="Pico de VRAM dos processos da carga quando a API do dispositivo permite essa atribuição; caso contrário, usa a VRAM total visível.">VRAM</div>
+          <div style="flex:0 0 62px" class="metric-help" title="Diferença entre o pico de VRAM e o baseline da fase de uso de recursos, no mesmo escopo da coluna VRAM.">Δ VRAM</div>
           <div style="flex:0 0 52px" class="metric-help" title="Maior temperatura observada durante o teste de uso de recursos, normalmente da GPU quando disponível.">Temp</div>
+          <div style="flex:0 0 62px" class="metric-help" title="Potência média dos componentes com telemetria disponível. GPU via NVML e CPU package via RAPL são somadas quando ambas existem.">Potência</div>
+          <div style="flex:0 0 72px" class="metric-help" title="Energia dos componentes medidos na fase de uso de recursos. O valor é integrado no tempo ou lido do contador RAPL.">Energia</div>
+          <div style="flex:0 0 58px" class="metric-help" title="Fração da duração da fase coberta pela telemetria de energia. Valores abaixo de 90% geram aviso e estimativa no scorecard.">Cob.</div>
+          <div style="flex:0 0 72px" class="metric-help" title="Energia por unidade principal: frame em visão, token em SLM ou segundo de áudio processado.">J/unid.</div>
+          <div style="flex:0 0 82px" class="metric-help" title="Custo estimado por mil unidades principais, somando amortização do hardware e eletricidade configuradas na aba Hardware.">Custo/1k</div>
         </div>
         <div id="res-body"></div>
       </div>
     </div>
   </div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+  <div class="results-charts">
     <div style="background:#171717;border:1px solid #303030;border-radius:8px;padding:16px">
       <div style="font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:#737373;margin-bottom:10px;font-weight:600">Throughput por Teste</div>
       <canvas id="chart-throughput" height="200"></canvas>
@@ -407,19 +451,23 @@ canvas{max-height:180px}
 <!-- Comparacao -->
 <div class="page" id="page-compare">
   <div class="card" style="margin-bottom:14px">
-    <h2>Comparar Modelos SLM</h2>
-    <p style="font-size:.8rem;color:var(--sub);margin-bottom:12px">Selecione dois resultados de benchmark SLM para comparar lado a lado.</p>
+    <h2>Comparar Resultados SLM</h2>
+    <p style="font-size:.8rem;color:var(--sub);margin-bottom:12px">Use execuções equivalentes para isolar o efeito do hardware ou do modelo.</p>
     <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:14px">
       <select id="cmp-a" style="min-width:250px"></select>
       <span style="color:var(--dim)">vs</span>
       <select id="cmp-b" style="min-width:250px"></select>
       <button class="btn primary" onclick="doCompare()">Comparar</button>
     </div>
+    <div id="compare-note"></div>
     <div id="compare-grid"></div>
   </div>
   <div class="card">
     <h2>Gráfico de Comparação</h2>
-    <canvas id="chart-compare" height="200"></canvas>
+    <div id="compare-chart-note" style="color:var(--sub);font-size:.8rem;padding:18px 0">
+      O gráfico será calculado para execuções comparáveis.
+    </div>
+    <canvas id="chart-compare" height="200" style="display:none"></canvas>
   </div>
 </div>
 
@@ -438,6 +486,54 @@ canvas{max-height:180px}
   <div class="card" style="margin-top:14px">
     <h2>Containers Docker</h2>
     <div id="hw-containers"></div>
+  </div>
+  <div class="card" style="margin-top:14px">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:10px">
+      <h2 style="margin:0">Aceleradores e interfaces</h2>
+      <button class="btn sm" onclick="loadDetectedHardware(true)">Detectar novamente</button>
+    </div>
+    <div id="hw-accelerators" class="table-wrap"></div>
+  </div>
+  <div class="card" style="margin-top:14px">
+    <h2>Limites de execução</h2>
+    <p style="font-size:.8rem;color:var(--sub);margin-bottom:10px">
+      Zero não adiciona um limite no Docker; limites herdados do host ainda podem existir e são registrados no resultado. Os valores são reaplicados pelo CLI após recriações. O tamanho de memória compartilhada é definido na criação do container.
+    </p>
+    <div id="docker-runtime-controls" class="table-wrap"></div>
+  </div>
+  <div class="card" style="margin-top:14px">
+    <h2>Hardware e custo operacional</h2>
+    <div class="form-grid">
+      <div class="form-field">
+        <label for="hardware-profile-id">Identificador da bancada</label>
+        <input id="hardware-profile-id" placeholder="laboratorio-principal">
+      </div>
+      <div class="form-field" style="grid-column:span 2">
+        <label for="hardware-description">Descrição do hardware</label>
+        <input id="hardware-description" placeholder="CPU, memória, aceleradores e fonte de alimentação">
+      </div>
+      <div class="form-field">
+        <label for="hardware-currency">Moeda</label>
+        <input id="hardware-currency" value="BRL" maxlength="8">
+      </div>
+      <div class="form-field">
+        <label for="hardware-price">Preço total do hardware</label>
+        <input id="hardware-price" type="number" min="0" step="0.01" placeholder="0,00">
+      </div>
+      <div class="form-field">
+        <label for="hardware-electricity">Energia por kWh</label>
+        <input id="hardware-electricity" type="number" min="0" step="0.0001" placeholder="0,00">
+      </div>
+      <div class="form-field">
+        <label for="hardware-amortization">Amortização em horas</label>
+        <input id="hardware-amortization" type="number" min="0.01" step="1" placeholder="8760">
+      </div>
+    </div>
+    <div class="form-actions">
+      <button class="btn primary" onclick="saveHardwareConfig()">Salvar custos</button>
+      <button class="btn" onclick="loadHardwareConfig()">Recarregar</button>
+      <span id="hardware-config-status" style="font-size:.78rem;color:var(--sub)"></span>
+    </div>
   </div>
   <div class="card" style="margin-top:14px">
     <h2>Scorecard — Últimos Resultados</h2>
@@ -477,7 +573,7 @@ canvas{max-height:180px}
         <ol style="padding-left:16px;margin:8px 0">
           <li><b>Throughput</b> — Roda inferências continuamente por <code>duration_sec</code> e mede ops/s</li>
           <li><b>Latência</b> — Executa <code>samples</code> inferências individuais e calcula percentis</li>
-          <li><b>Uso de recursos</b> — Monitora CPU/RAM/GPU/VRAM/temp durante <code>duration_sec</code></li>
+          <li><b>Uso de recursos</b> — Mede container, processos, host e aceleradores durante a mesma janela de inferência</li>
           <li><b>Carga sustentada</b> — Roda por <code>duration_min</code> minutos medindo degradação (0 = skip)</li>
           <li><b>Bandwidth de memória</b> — Testa largura de banda com padrões sequencial/random</li>
         </ol>
@@ -491,13 +587,11 @@ canvas{max-height:180px}
     resource_usage: {duration_sec: 20, interval_sec: 1}
     sustained_load: {duration_min: 0}
     memory_bandwidth: {enabled: false}</pre>
-        <h3 style="color:var(--text);margin:12px 0 6px">TTS e ASR na GPU</h3>
-        <p><b>Whisper (ASR)</b>: O modelo <code>faster-whisper</code> suporta GPU via CTranslate2/CUDA.
-           Atualmente roda em CPU no container. Para habilitar GPU, seria necessário instalar
-           <code>ctranslate2</code> com CUDA no Dockerfile do audio.</p>
-        <p style="margin-top:4px"><b>Piper (TTS)</b>: Usa ONNX Runtime. Suporta GPU via <code>onnxruntime-gpu</code>,
-           mas o ganho é marginal para modelos pequenos — o overhead de transferência CPU↔GPU supera o ganho.
-           Para vozes pequenas como a pt-BR-faber, CPU é mais eficiente.</p>
+        <h3 style="color:var(--text);margin:12px 0 6px">Dispositivo de execução do áudio</h3>
+        <p><b>Whisper (ASR)</b>: usa CTranslate2/CUDA quando o container recebe a GPU e o runtime
+           oferece um tipo de cálculo compatível. Caso contrário, a carga usa CPU e registra esse dispositivo.</p>
+        <p style="margin-top:4px"><b>Piper (TTS)</b>: usa ONNX Runtime em CPU nesta versão,
+           inclusive quando o container de áudio recebe uma GPU.</p>
       </div>
     </div>
   </div>
@@ -567,6 +661,10 @@ canvas{max-height:180px}
                 <div style="font-size:.74rem;color:var(--sub);margin-bottom:4px">RAM mínima (GB)</div>
                 <input id="model-min-ram" type="number" min="0" step="0.1" placeholder="2">
               </div>
+            </div>
+            <div style="margin-bottom:10px">
+              <div style="font-size:.74rem;color:var(--sub);margin-bottom:4px">SHA-256 do arquivo</div>
+              <input id="model-sha256" maxlength="64" placeholder="Opcional; valida o arquivo baixado">
             </div>
             <div style="display:flex;gap:14px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
               <label style="display:flex;gap:6px;align-items:center;font-size:.8rem;color:var(--sub)">
@@ -640,6 +738,9 @@ let allResults = [];
 let metrics = {};
 let modelCatalogData = {};
 let lastResultsRenderKey = '';
+let lastResultsHtml = '';
+let resultsLoadSequence = 0;
+let resultsRequestKey = '';
 let visionPreviewMeta = {width:0,height:0};
 
 /* Tabs */
@@ -651,6 +752,11 @@ function showTab(name) {
   document.querySelectorAll('.page').forEach(p => p.classList.toggle('active', p.id === 'page-'+name));
   if(name === 'results') refreshResultsIfNeeded(true, true);
   if(name === 'compare') populateCompareSelects();
+  if(name === 'hardware') {
+    loadContainerRuntime();
+    loadHardwareConfig();
+    loadDetectedHardware();
+  }
 }
 
 /* Toast */
@@ -717,7 +823,7 @@ const MAX_H = 60;
 const gpuHist = {util:[], vram:[], temp:[]};
 const sysHist = {cpu:[], ram:[]};
 
-const chartGpu = new Chart(document.getElementById('chart-gpu'), {
+const chartGpu = typeof Chart !== 'undefined' ? new Chart(document.getElementById('chart-gpu'), {
   type:'line',
   data:{labels:Array(MAX_H).fill(''),datasets:[
     {label:'GPU %',data:[],borderColor:'#0f766e',backgroundColor:'#0f766e20',tension:.3,fill:true,pointRadius:0,borderWidth:1.5},
@@ -732,9 +838,9 @@ const chartGpu = new Chart(document.getElementById('chart-gpu'), {
     },
     plugins:{legend:{labels:{color:'#a3a3a3',font:{size:9},boxWidth:8,padding:8}}}
   }
-});
+}) : null;
 
-const chartSys = new Chart(document.getElementById('chart-sys'), {
+const chartSys = typeof Chart !== 'undefined' ? new Chart(document.getElementById('chart-sys'), {
   type:'line',
   data:{labels:Array(MAX_H).fill(''),datasets:[
     {label:'CPU %',data:[],borderColor:'#eab308',backgroundColor:'#eab30820',tension:.3,fill:true,pointRadius:0,borderWidth:1.5},
@@ -744,7 +850,7 @@ const chartSys = new Chart(document.getElementById('chart-sys'), {
     scales:{y:{min:0,max:100,ticks:{color:'#737373',font:{size:9}},grid:{color:'#2a2a2a'}},x:{display:false}},
     plugins:{legend:{labels:{color:'#a3a3a3',font:{size:9},boxWidth:8,padding:8}}}
   }
-});
+}) : null;
 
 let chartThroughput, chartLatency, chartCompare;
 
@@ -753,12 +859,15 @@ function push(arr, v) { arr.push(v); if(arr.length > MAX_H) arr.shift(); }
 /* Container cards */
 function containerHTML(data, front) {
   if(!data || data.status==='offline') return `<div class="status-line"><span class="dot dot-off"></span> Offline</div>`;
+  const healthy = data.status === 'ok';
+  const state = healthy ? 'Online' : 'Degradado';
+  const dot = healthy ? 'dot-ok' : 'dot-warn';
   const badge = data.gpu ? '<span class="badge b-gpu">CUDA</span>' : '<span class="badge b-cpu">CPU</span>';
   const model = data.model || data.asr || '';
   return `
-    <div class="status-line"><span class="dot dot-ok"></span> Online ${badge}</div>
-    <div class="detail">${model}</div>
-    ${data.tts ? '<div class="detail">TTS: '+data.tts+'</div>' : ''}
+    <div class="status-line"><span class="dot ${dot}"></span> ${state} ${badge}</div>
+    <div class="detail">${escapeHtml(model)}</div>
+    ${data.tts ? '<div class="detail">TTS: '+escapeHtml(data.tts)+'</div>' : ''}
   `;
 }
 
@@ -785,10 +894,20 @@ async function fetchMetrics() {
       push(gpuHist.util, g.util_gpu_pct||0);
       push(gpuHist.vram, vramPct);
       push(gpuHist.temp, g.temp_c||0);
-      chartGpu.data.datasets[0].data = [...gpuHist.util];
-      chartGpu.data.datasets[1].data = [...gpuHist.vram];
-      chartGpu.data.datasets[2].data = [...gpuHist.temp];
-      chartGpu.update('none');
+      if(chartGpu) {
+        chartGpu.data.datasets[0].data = [...gpuHist.util];
+        chartGpu.data.datasets[1].data = [...gpuHist.vram];
+        chartGpu.data.datasets[2].data = [...gpuHist.temp];
+        chartGpu.update('none');
+      }
+    } else {
+      document.getElementById('m-gpu-util').textContent = '—';
+      document.getElementById('m-vram').textContent = '—';
+      document.getElementById('m-vram-detail').textContent = 'Telemetria indisponível';
+      document.getElementById('m-gpu-temp').textContent = '—';
+      document.getElementById('m-power').textContent = '—';
+      setGauge('gpu', 0, '%');
+      setGauge('vram', 0, '%');
     }
     if(!s.error) {
       setGauge('ram', s.ram_pct||0, '%');
@@ -796,9 +915,11 @@ async function fetchMetrics() {
       setGauge('disk', s.disk_pct||0, '%');
       push(sysHist.cpu, s.cpu_pct||0);
       push(sysHist.ram, s.ram_pct||0);
-      chartSys.data.datasets[0].data = [...sysHist.cpu];
-      chartSys.data.datasets[1].data = [...sysHist.ram];
-      chartSys.update('none');
+      if(chartSys) {
+        chartSys.data.datasets[0].data = [...sysHist.cpu];
+        chartSys.data.datasets[1].data = [...sysHist.ram];
+        chartSys.update('none');
+      }
     }
 
     // Containers
@@ -833,7 +954,7 @@ async function fetchMetrics() {
           el.innerHTML = `<span class="badge b-ok">Concluído</span>`;
           if(btn) btn.disabled = false;
         } else if(st && st.progress === 'error') {
-          el.innerHTML = `<span class="badge b-err">Erro: ${st.error||'?'}</span>`;
+          el.innerHTML = `<span class="badge b-err">Erro: ${escapeHtml(st.error||'?')}</span>`;
           if(btn) btn.disabled = false;
         } else {
           el.innerHTML = '';
@@ -841,9 +962,9 @@ async function fetchMetrics() {
         }
       }
     }
-    // Audio ASR/TTS status (both share the 'audio' benchmark slot)
+    // Os modos de áudio compartilham a mesma fila de benchmark.
     const audioSt = bs['audio'];
-    for(const mode of ['asr','tts']) {
+    for(const mode of ['asr','tts','pipeline']) {
       const el = document.getElementById('bench-audio-'+mode+'-status');
       const btn = document.getElementById('btn-bench-audio-'+mode);
       if(el) {
@@ -854,7 +975,7 @@ async function fetchMetrics() {
           el.innerHTML = `<span class="badge b-ok">Concluído</span>`;
           if(btn) btn.disabled = false;
         } else if(audioSt && audioSt.progress === 'error') {
-          el.innerHTML = `<span class="badge b-err">Erro: ${audioSt.error||'?'}</span>`;
+          el.innerHTML = `<span class="badge b-err">Erro: ${escapeHtml(audioSt.error||'?')}</span>`;
           if(btn) btn.disabled = false;
         } else {
           el.innerHTML = '';
@@ -867,16 +988,20 @@ async function fetchMetrics() {
     if(!g.error) {
       document.getElementById('hw-gpu').innerHTML = `
         <table>
-          <tr><td style="color:var(--sub)">Nome</td><td>${g.name}</td></tr>
+          <tr><td style="color:var(--sub)">Nome</td><td>${escapeHtml(g.name || 'N/A')}</td></tr>
           <tr><td style="color:var(--sub)">VRAM</td><td>${g.mem_used_mb?.toFixed(0)} / ${g.mem_total_mb?.toFixed(0)} MB</td></tr>
           <tr><td style="color:var(--sub)">Utilização</td><td>${g.util_gpu_pct?.toFixed(1)}%</td></tr>
           <tr><td style="color:var(--sub)">Temperatura</td><td>${g.temp_c?.toFixed(0)} °C</td></tr>
           <tr><td style="color:var(--sub)">Potência</td><td>${g.power_w != null ? g.power_w.toFixed(1)+' W' : 'N/A'}</td></tr>
           <tr><td style="color:var(--sub)">Clock</td><td>${g.clock_mhz != null ? g.clock_mhz.toFixed(0)+' MHz' : 'N/A'}</td></tr>
           <tr><td style="color:var(--sub)">Fan</td><td>${g.fan_pct != null ? g.fan_pct.toFixed(0)+'%' : 'N/A'}</td></tr>
-          <tr><td style="color:var(--sub)">P-State</td><td>${g.pstate || 'N/A'}</td></tr>
+          <tr><td style="color:var(--sub)">P-State</td><td>${escapeHtml(g.pstate || 'N/A')}</td></tr>
         </table>
       `;
+    } else {
+      document.getElementById('hw-gpu').innerHTML = `
+        <div style="color:var(--sub);font-size:.82rem">${escapeHtml(g.error || 'Telemetria de GPU indisponível')}</div>
+        ${g.detail ? `<div style="color:var(--dim);font-size:.72rem;margin-top:6px">${escapeHtml(g.detail)}</div>` : ''}`;
     }
     if(!s.error) {
       document.getElementById('hw-sys').innerHTML = `
@@ -884,8 +1009,8 @@ async function fetchMetrics() {
           <tr><td style="color:var(--sub)">CPUs</td><td>${s.cpu_count} cores</td></tr>
           <tr><td style="color:var(--sub)">CPU Usage</td><td>${s.cpu_pct?.toFixed(1)}%</td></tr>
           <tr><td style="color:var(--sub)">CPU Temp</td><td>${s.cpu_temp_c != null ? s.cpu_temp_c.toFixed(0)+' °C' : 'N/A'}</td></tr>
-          <tr><td style="color:var(--sub)">RAM</td><td>${s.ram_used_gb?.toFixed(1)} / ${s.ram_total_gb?.toFixed(1)} GB (${s.ram_pct?.toFixed(1)}%)</td></tr>
-          <tr><td style="color:var(--sub)">Disco</td><td>${s.disk_used_gb?.toFixed(0)} / ${s.disk_total_gb?.toFixed(0)} GB (${s.disk_pct?.toFixed(1)}%)</td></tr>
+          <tr><td style="color:var(--sub)">RAM</td><td>${s.ram_used_gb?.toFixed(1)} / ${s.ram_total_gb?.toFixed(1)} GiB (${s.ram_pct?.toFixed(1)}%)</td></tr>
+          <tr><td style="color:var(--sub)">Disco</td><td>${s.disk_used_gb?.toFixed(0)} / ${s.disk_total_gb?.toFixed(0)} GiB (${s.disk_pct?.toFixed(1)}%)</td></tr>
         </table>
       `;
     }
@@ -894,26 +1019,31 @@ async function fetchMetrics() {
         <tr><th>Container</th><th>Status</th><th>Device</th><th>Model</th></tr>
         ${['vision','slm','audio'].map(f => {
           const d = c[f] || {};
-          const st = d.status === 'ok' ? '<span class="badge b-ok">Online</span>' : '<span class="badge b-err">Offline</span>';
+          const st = d.status === 'ok'
+            ? '<span class="badge b-ok">Online</span>'
+            : d.status === 'degraded'
+              ? '<span class="badge" style="background:#2a2515;color:#facc15">Degradado</span>'
+              : '<span class="badge b-err">Offline</span>';
           const dev = d.gpu ? '<span class="badge b-gpu">CUDA</span>' : d.status==='ok' ? '<span class="badge b-cpu">CPU</span>' : '—';
-          return `<tr><td>${f} :${({vision:8010,slm:8011,audio:8012})[f]}</td><td>${st}</td><td>${dev}</td><td style="color:var(--sub)">${d.model||d.asr||'—'}</td></tr>`;
+          return `<tr><td>${f} :${({vision:8010,slm:8011,audio:8012})[f]}</td><td>${st}</td><td>${dev}</td><td style="color:var(--sub)">${escapeHtml(d.model||d.asr||'—')}</td></tr>`;
         }).join('')}
       </table>
     `;
     const scored = (allResults||[]).filter(r => r.performance_score != null || r.primary_metric);
     document.getElementById('hw-scorecard').innerHTML = scored.length ? `
       <table>
-        <tr><th>Front</th><th>Modelo</th><th>Métrica</th><th>Score</th><th>Energia/op</th><th>Custo/1k</th></tr>
+        <tr><th>Front</th><th>Bancada</th><th>Modelo</th><th>Métrica</th><th>Score</th><th>Energia/unid.</th><th>Custo/1k</th></tr>
         ${scored.slice(0,8).map(r => {
           const pm = r.primary_metric || {};
-          const metric = pm.value != null ? `${Number(pm.value).toFixed(2)} ${pm.unit||''}` : '—';
+          const metric = pm.value != null ? `${Number(pm.value).toFixed(2)} ${escapeHtml(pm.unit||'')}` : '—';
           return `<tr>
-            <td>${r.front||'?'}</td>
-            <td style="color:var(--sub)">${(r.model||'?').replace('.gguf','').slice(0,28)}</td>
+            <td>${escapeHtml(r.front||'?')}</td>
+            <td style="color:var(--sub)" title="${escapeHtml(r.hardware_profile_description||r.hardware_id||'Inventário não identificado')}">${escapeHtml(r.hardware_profile_id||r.hardware_id||'legado')}</td>
+            <td style="color:var(--sub)">${escapeHtml((r.model||'?').replace('.gguf','').slice(0,28))}</td>
             <td>${metric}</td>
             <td>${r.performance_score != null ? Number(r.performance_score).toFixed(1) : '—'}</td>
-            <td>${r.energy_per_op_j != null ? Number(r.energy_per_op_j).toFixed(5)+' J' : '—'}</td>
-            <td>${r.cost_per_1k != null ? Number(r.cost_per_1k).toFixed(6) : '—'}</td>
+            <td>${r.energy_per_primary_unit_j != null ? Number(r.energy_per_primary_unit_j).toFixed(5)+' J' : '—'}</td>
+            <td>${r.cost_per_1k != null ? escapeHtml((r.cost_currency||'')+' '+Number(r.cost_per_1k).toFixed(6)) : '—'}</td>
           </tr>`;
         }).join('')}
       </table>` :
@@ -949,8 +1079,16 @@ async function runBench(front) {
 
 async function runBenchAudio(mode) {
   const profile = document.getElementById('bench-audio-'+mode+'-profile').value;
-  const modelSel = document.getElementById('bench-audio-'+mode+'-model');
-  const model = modelSel && modelSel.value ? modelSel.value : undefined;
+  let model;
+  if(mode === 'pipeline') {
+    model = {
+      asr: document.getElementById('bench-audio-asr-model')?.value || undefined,
+      tts: document.getElementById('bench-audio-tts-model')?.value || undefined,
+    };
+  } else {
+    const modelSel = document.getElementById('bench-audio-'+mode+'-model');
+    model = modelSel && modelSel.value ? modelSel.value : undefined;
+  }
   toast('Iniciando benchmark: audio/'+mode+' ('+profile+')');
   try {
     const body = {front:'audio', profile, mode};
@@ -964,22 +1102,58 @@ async function runBenchAudio(mode) {
   } catch(e) { toast('Erro: '+e.message); }
 }
 
+function profileDurationLabel(seconds) {
+  const value = Number(seconds || 0);
+  if(value >= 60) {
+    const minutes = value / 60;
+    return `${Number.isInteger(minutes) ? minutes : minutes.toFixed(1)} min`;
+  }
+  return `${value.toFixed(value % 1 ? 1 : 0)} s`;
+}
+
+async function loadBenchmarkProfiles() {
+  try {
+    const data = await requestJson('/api/profiles');
+    const profiles = data.profiles || [];
+    document.querySelectorAll('select[id^="bench-"][id$="-profile"]').forEach(select => {
+      const previous = select.value;
+      select.innerHTML = profiles.map(profile => {
+        const timing = `>= ${profileDurationLabel(profile.fixed_duration_sec)}` +
+          (profile.latency_samples ? ` + ${profile.latency_samples} amostras` : '');
+        return `<option value="${escapeHtml(profile.name)}">${escapeHtml(profile.name)} (${escapeHtml(timing)})</option>`;
+      }).join('');
+      const selected = profiles.some(profile => profile.name === previous)
+        ? previous : (data.default || profiles[0]?.name || '');
+      select.value = selected;
+    });
+  } catch(error) {
+    toast(`Erro ao carregar perfis: ${error.message}`);
+  }
+}
+
 async function runAllBench() {
   const log = document.getElementById('bench-all-log');
+  const button = document.getElementById('btn-bench-all');
+  button.disabled = true;
   log.textContent = '[' + new Date().toLocaleTimeString('pt-BR') + '] Iniciando benchmarks sequenciais...\n';
+  const asrModel = (document.getElementById('bench-audio-asr-model')?.value||'') || undefined;
+  const ttsModel = (document.getElementById('bench-audio-tts-model')?.value||'') || undefined;
   const tasks = [
     {front:'vision', profile: document.getElementById('bench-vision-profile').value,
       model: (document.getElementById('bench-vision-model')?.value||'') || undefined},
     {front:'slm', profile: document.getElementById('bench-slm-profile').value,
       model: (document.getElementById('bench-slm-model')?.value||'') || undefined},
-    {front:'audio', profile: document.getElementById('bench-audio-asr-profile').value, mode:'pipeline',
-      model: {
-        asr: (document.getElementById('bench-audio-asr-model')?.value||'') || undefined,
-        tts: (document.getElementById('bench-audio-tts-model')?.value||'') || undefined,
-      }},
+    {front:'audio', profile: document.getElementById('bench-audio-asr-profile').value,
+      mode:'asr', model:asrModel},
+    {front:'audio', profile: document.getElementById('bench-audio-tts-profile').value,
+      mode:'tts', model:ttsModel},
+    {front:'audio', profile: document.getElementById('bench-audio-pipeline-profile').value,
+      mode:'pipeline', model:{asr:asrModel, tts:ttsModel}},
   ];
+  let failures = 0;
   for(const task of tasks) {
-    log.textContent += `[${new Date().toLocaleTimeString('pt-BR')}] → ${task.front} (${task.profile})...\n`;
+    const taskName = task.mode ? `${task.front}/${task.mode}` : task.front;
+    log.textContent += `[${new Date().toLocaleTimeString('pt-BR')}] ${taskName} (${task.profile})...\n`;
     try {
       const body = {front:task.front, profile:task.profile};
       if(task.model) body.model = task.model;
@@ -990,22 +1164,26 @@ async function runAllBench() {
       });
       const startData = await startResp.json();
       if(startData.error) throw new Error(startData.error);
-      let done = false;
-      while(!done) {
+      let finalStatus;
+      while(!finalStatus) {
         await new Promise(r => setTimeout(r, 2000));
-        const r = await fetch('/api/metrics');
-        const d = await r.json();
+        const d = await requestJson('/api/metrics');
         const st = (d.benchmark_status||{})[task.front];
-        if(!st || !st.running) done = true;
+        if(!st) throw new Error('estado do benchmark indisponível');
+        if(!st.running) finalStatus = st;
       }
-      log.textContent += `[${new Date().toLocaleTimeString('pt-BR')}] ✓ ${task.front} concluído\n`;
+      if(finalStatus.progress === 'error') throw new Error(finalStatus.error || 'benchmark falhou');
+      log.textContent += `[${new Date().toLocaleTimeString('pt-BR')}] ${taskName} concluído\n`;
     } catch(e) {
-      log.textContent += `[${new Date().toLocaleTimeString('pt-BR')}] ✗ ${task.front} erro: ${e.message}\n`;
+      failures += 1;
+      log.textContent += `[${new Date().toLocaleTimeString('pt-BR')}] ${taskName} falhou: ${e.message}\n`;
     }
     log.scrollTop = log.scrollHeight;
   }
-  log.textContent += `[${new Date().toLocaleTimeString('pt-BR')}] Todos os benchmarks concluídos!\n`;
-  toast('Benchmarks completos!');
+  const summary = failures ? `${failures} benchmark(s) falharam` : 'Todos os benchmarks concluídos';
+  log.textContent += `[${new Date().toLocaleTimeString('pt-BR')}] ${summary}.\n`;
+  toast(summary);
+  button.disabled = false;
 }
 
 /* Inference */
@@ -1045,8 +1223,8 @@ async function doInference() {
       const tps = d.tokens_per_sec ? d.tokens_per_sec.toFixed(1) : '?';
       const ttft = d.time_to_first_token_ms ? d.time_to_first_token_ms.toFixed(0) : '?';
       const tok = d.total_tokens || '?';
-      out.innerHTML = `<div>${text}</div><div style="margin-top:8px;font-size:.75rem;color:var(--dim)">` +
-        `${tps} tokens/s · TTFT: ${ttft}ms · ${tok} tokens · Modelo: ${d.model||'?'}</div>`;
+      out.innerHTML = `<div>${escapeHtml(text).replaceAll('\n','<br>')}</div><div style="margin-top:8px;font-size:.75rem;color:var(--dim)">` +
+        `${tps} tokens/s · TTFT: ${ttft}ms · ${tok} tokens · Modelo: ${escapeHtml(d.model||'?')}</div>`;
     }
   } catch(e) { out.textContent = 'Erro: '+e.message; }
   btn.disabled = false;
@@ -1067,14 +1245,14 @@ async function doTTS() {
     const d = await r.json();
     const elapsed = ((performance.now()-t0)/1000).toFixed(2);
     document.getElementById('tts-time').textContent = elapsed+'s';
-    if(d.error) { out.innerHTML = '<span style="color:var(--red)">Erro: '+d.error+'</span>'; }
+    if(d.error) { out.innerHTML = '<span style="color:var(--red)">Erro: '+escapeHtml(d.error)+'</span>'; }
     else if(d.audio_base64) {
       out.innerHTML = `<audio controls src="data:audio/wav;base64,${d.audio_base64}" style="width:100%"></audio>
         <div style="font-size:.75rem;color:var(--sub);margin-top:4px">Duração: ${d.duration_s?.toFixed(2)||'?'}s | Tempo: ${elapsed}s</div>`;
     } else {
       out.innerHTML = '<span style="color:var(--sub)">Sem áudio retornado</span>';
     }
-  } catch(e) { out.innerHTML = '<span style="color:var(--red)">Erro: '+e.message+'</span>'; }
+  } catch(e) { out.innerHTML = '<span style="color:var(--red)">Erro: '+escapeHtml(e.message)+'</span>'; }
   btn.disabled = false;
 }
 
@@ -1185,16 +1363,27 @@ async function loadResultsFromServer(options = {}) {
   const body = document.getElementById('res-body');
   const countEl = document.getElementById('res-count');
   if(!body) return;
+  const renderKey = options.renderKey || getResultsRenderKey(filter);
+  const requestKey = `${filter}|${renderKey}`;
+  if(resultsRequestKey === requestKey) return;
+  resultsRequestKey = requestKey;
+  const sequence = ++resultsLoadSequence;
   if(showLoading && !body.innerHTML.trim()) {
     body.innerHTML = '<div style="color:#737373;padding:16px;text-align:center;font-size:.82rem">Carregando...</div>';
   }
   try {
     const r = await fetch('/api/results-html?front=' + filter);
     const d = await r.json();
-    body.innerHTML = d.html || '';
-    lastResultsRenderKey = options.renderKey || getResultsRenderKey(filter);
+    if(!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+    if(sequence !== resultsLoadSequence) return;
+    const html = d.html || '';
+    if(lastResultsHtml !== html) {
+      body.innerHTML = html;
+      lastResultsHtml = html;
+    }
+    lastResultsRenderKey = renderKey;
     if(countEl) {
-      const shown = (d.html.match(/display:flex/g)||[]).length;
+      const shown = (html.match(/display:flex/g)||[]).length;
       countEl.textContent = `(${d.total} total · ${shown} exibidos)`;
     }
     // Update charts from allResults if available
@@ -1204,7 +1393,11 @@ async function loadResultsFromServer(options = {}) {
       try { renderLatencyChart(data); } catch(e) {}
     }
   } catch(e) {
-    body.innerHTML = '<div style="color:#ef4444;padding:16px;font-size:.82rem">Erro ao carregar resultados: ' + e.message + '</div>';
+    if(sequence !== resultsLoadSequence) return;
+    lastResultsHtml = '';
+    body.innerHTML = '<div style="color:#ef4444;padding:16px;font-size:.82rem">Erro ao carregar resultados: ' + escapeHtml(e.message) + '</div>';
+  } finally {
+    if(sequence === resultsLoadSequence) resultsRequestKey = '';
   }
 }
 
@@ -1214,10 +1407,12 @@ function renderResults() { loadResultsFromServer({showLoading:false}); }
 function fmtMs(v) { return v != null ? v.toFixed(1) : '—'; }
 
 function renderThroughputChart(data) {
+  if(typeof Chart === 'undefined') return;
   const canvas = document.getElementById('chart-throughput');
-  const labels = data.map(r => (r.model||'?').replace('.gguf','').slice(0,15) + ' (' + (r.profile||'?') + ')');
-  const colors = data.map(r => r.front==='vision'?'#0f766e':r.front==='slm'?'#22c55e':'#eab308');
-  const values = data.map(r=>r.throughput_ops||0);
+  const recent = data.slice(0,20).reverse();
+  const labels = recent.map(r => (r.model||'?').replace('.gguf','').slice(0,15) + ' (' + (r.profile||'?') + ')');
+  const colors = recent.map(r => r.front==='vision'?'#0f766e':r.front==='slm'?'#22c55e':'#eab308');
+  const values = recent.map(r=>r.throughput_ops||0);
   if(chartThroughput) {
     chartThroughput.data.labels = labels;
     chartThroughput.data.datasets[0].data = values;
@@ -1235,9 +1430,11 @@ function renderThroughputChart(data) {
 }
 
 function renderLatencyChart(data) {
+  if(typeof Chart === 'undefined') return;
   const canvas = document.getElementById('chart-latency');
-  const labels = data.map(r => (r.model||'?').replace('.gguf','').slice(0,15));
-  const p50 = data.map(r=>r.p50_ms||0), p95 = data.map(r=>r.p95_ms||0), p99 = data.map(r=>r.p99_ms||0);
+  const recent = data.slice(0,20).reverse();
+  const labels = recent.map(r => (r.model||'?').replace('.gguf','').slice(0,15));
+  const p50 = recent.map(r=>r.p50_ms||0), p95 = recent.map(r=>r.p95_ms||0), p99 = recent.map(r=>r.p99_ms||0);
   if(chartLatency) {
     chartLatency.data.labels = labels;
     chartLatency.data.datasets[0].data = p50;
@@ -1261,12 +1458,44 @@ function renderLatencyChart(data) {
 }
 
 /* Compare */
+function resultHardwareLabel(result) {
+  const parts = [
+    result.hardware_profile_id,
+    result.cpu_model,
+    result.gpu_model,
+    result.architecture,
+    result.hardware_id ? `id ${result.hardware_id}` : null,
+  ].filter(Boolean);
+  return parts.length ? [...new Set(parts)].join(' / ') : 'não identificado';
+}
+
+function resultExecutionLabel(result) {
+  const execution = result.execution || {};
+  return [
+    execution.gpu_mode || execution.device || execution.asr_device,
+    execution.backend,
+    execution.cpu_limit_cores ? `${execution.cpu_limit_cores} CPU` : null,
+    execution.memory_limit_mb ? `${execution.memory_limit_mb} MB` : null,
+  ].filter(Boolean).join(' / ') || 'não identificada';
+}
+
+function stableCompareValue(value) {
+  if(Array.isArray(value)) return `[${value.map(stableCompareValue).join(',')}]`;
+  if(value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map(key =>
+      `${JSON.stringify(key)}:${stableCompareValue(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
 function populateCompareSelects() {
   const slmResults = allResults.filter(r => r.front === 'slm');
   const html = slmResults.map((r,i) => {
     const m = (r.model||'?').replace('.gguf','').slice(0,25);
+    const hw = (r.hardware_profile_id || r.gpu_model || r.cpu_model ||
+      r.architecture || '?').slice(0,28);
     const t = r.timestamp ? new Date(r.timestamp).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '';
-    return `<option value="${i}">${m} — ${r.profile||'?'} — ${t}</option>`;
+    return `<option value="${i}">${escapeHtml(m)} — ${escapeHtml(r.profile||'?')} — ${escapeHtml(hw)} — ${escapeHtml(t)}</option>`;
   }).join('');
   document.getElementById('cmp-a').innerHTML = html;
   document.getElementById('cmp-b').innerHTML = html;
@@ -1281,14 +1510,57 @@ function doCompare() {
   const a = slmResults[ia], b = slmResults[ib];
   if(!a || !b) return;
 
+  const requirements = [
+    ['perfil', a.profile, b.profile],
+    ['dataset', a.dataset, b.dataset],
+    ['metodologia', a.methodology_version, b.methodology_version],
+    ['modo', a.mode ?? 'slm', b.mode ?? 'slm'],
+  ];
+  const incompatible = requirements
+    .filter(([,va,vb]) => va == null || vb == null || JSON.stringify(va) !== JSON.stringify(vb))
+    .map(([label]) => label);
+  const sameModel = a.model && a.model !== '?' && a.model === b.model;
+  const hardwareA = resultHardwareLabel(a);
+  const hardwareB = resultHardwareLabel(b);
+  const sameKnownHardware = hardwareA !== 'não identificado' && hardwareA === hardwareB;
+  const executionA = resultExecutionLabel(a);
+  const executionB = resultExecutionLabel(b);
+  const sameKnownExecution = Object.keys(a.execution || {}).length > 0 &&
+    Object.keys(b.execution || {}).length > 0 &&
+    stableCompareValue(a.execution) === stableCompareValue(b.execution);
+  const directComparison = incompatible.length === 0 && (
+    sameModel || (sameKnownHardware && sameKnownExecution)
+  );
+
+  const note = document.getElementById('compare-note');
+  if(incompatible.length) {
+    note.className = 'compare-note';
+    note.textContent = `Sem ranking direto: os resultados diferem ou não registram ${incompatible.join(', ')}.`;
+  } else if(!sameModel && !directComparison) {
+    note.className = 'compare-note';
+    note.textContent = 'Sem ranking direto: modelo e ambiente de execução mudaram ao mesmo tempo.';
+  } else {
+    note.className = 'compare-note ok';
+    note.textContent = sameModel
+      ? 'Carga equivalente para comparar hardware ou política de execução.'
+      : 'Mesmo hardware e execução para comparar os modelos selecionados.';
+  }
+
+  const primaryUnit = a.primary_metric?.unit === b.primary_metric?.unit
+    ? a.primary_metric?.unit : null;
   const metrics = [
+    [`Métrica primária${primaryUnit ? ` (${primaryUnit})` : ''}`,
+      a.primary_metric?.value, b.primary_metric?.value, true],
+    ['Hardware', hardwareA, hardwareB, null],
+    ['Execução', executionA, executionB, null],
     ['Throughput (ops/s)', a.throughput_ops, b.throughput_ops, true],
     ['Latência p50 (ms)', a.p50_ms, b.p50_ms, false],
     ['Latência p95 (ms)', a.p95_ms, b.p95_ms, false],
     ['Latência p99 (ms)', a.p99_ms, b.p99_ms, false],
     ['Desvio padrão (ms)', a.std_ms, b.std_ms, false],
     ['RAM Pico (MB)', a.peak_ram_mb, b.peak_ram_mb, false],
-    ['GPU Pico (%)', a.peak_gpu_util, b.peak_gpu_util, true],
+    ['CPU médio (%)', a.avg_cpu_pct, b.avg_cpu_pct, null],
+    ['GPU Pico (%)', a.peak_gpu_util, b.peak_gpu_util, null],
     ['VRAM Pico (MB)', a.peak_vram_mb, b.peak_vram_mb, false],
     ['Temperatura Pico (°C)', a.peak_temp_c, b.peak_temp_c, false],
     ['Energia (J)', a.energy_j, b.energy_j, false],
@@ -1298,12 +1570,12 @@ function doCompare() {
   const nameB = (b.model||'?').replace('.gguf','').slice(0,20);
 
   let html = `<div class="compare-grid">
-    <div class="header">Métrica</div><div class="header">${nameA}</div><div class="header">${nameB}</div>`;
+    <div class="header">Métrica</div><div class="header">${escapeHtml(nameA)}</div><div class="header">${escapeHtml(nameB)}</div>`;
   for(const [label, va, vb, higherBetter] of metrics) {
     const fmtA = va != null ? (typeof va === 'number' ? va.toFixed(2) : va) : '—';
     const fmtB = vb != null ? (typeof vb === 'number' ? vb.toFixed(2) : vb) : '—';
     let clsA = 'val', clsB = 'val';
-    if(va != null && vb != null) {
+    if(directComparison && higherBetter != null && va != null && vb != null) {
       if(higherBetter) { if(va > vb) clsA='val better'; else if(vb > va) clsB='val better'; }
       else { if(va < vb) clsA='val better'; else if(vb < va) clsB='val better'; }
     }
@@ -1312,19 +1584,36 @@ function doCompare() {
   html += '</div>';
   document.getElementById('compare-grid').innerHTML = html;
 
-  // Radar chart
+  if(typeof Chart === 'undefined') return;
   const canvas = document.getElementById('chart-compare');
+  const chartNote = document.getElementById('compare-chart-note');
   if(chartCompare) chartCompare.destroy();
-  const labels = metrics.filter(m => m[1]!=null && m[2]!=null).map(m => m[0].split('(')[0].trim());
-  const normalize = (vals) => {
-    const max = Math.max(...vals.filter(v=>v!=null));
-    return vals.map(v => v!=null ? (v/max*100).toFixed(1) : 0);
+  chartCompare = null;
+  if(!directComparison) {
+    canvas.style.display = 'none';
+    chartNote.style.display = 'block';
+    return;
+  }
+  canvas.style.display = 'block';
+  chartNote.style.display = 'none';
+  const comparable = metrics.filter(m => m[3] != null && m[1] != null && m[2] != null);
+  const labels = comparable.map(m => m[0].split('(')[0].trim());
+  const normalizePair = ([, valueA, valueB, higherBetter]) => {
+    if(valueA === 0 && valueB === 0) return [100, 100];
+    if(higherBetter) {
+      const best = Math.max(valueA, valueB);
+      return best > 0 ? [valueA / best * 100, valueB / best * 100] : [0, 0];
+    }
+    if(valueA <= 0 || valueB <= 0) {
+      if(valueA === valueB) return [100, 100];
+      return valueA <= 0 ? [100, 0] : [0, 100];
+    }
+    const best = Math.min(valueA, valueB);
+    return [best / valueA * 100, best / valueB * 100];
   };
-  const valsA = metrics.filter(m=>m[1]!=null&&m[2]!=null).map(m=>m[1]);
-  const valsB = metrics.filter(m=>m[1]!=null&&m[2]!=null).map(m=>m[2]);
-  const maxVals = valsA.map((v,i) => Math.max(v, valsB[i]));
-  const normA = valsA.map((v,i) => (v/maxVals[i]*100).toFixed(1));
-  const normB = valsB.map((v,i) => (v/maxVals[i]*100).toFixed(1));
+  const normalized = comparable.map(normalizePair);
+  const normA = normalized.map(pair => pair[0].toFixed(1));
+  const normB = normalized.map(pair => pair[1].toFixed(1));
 
   chartCompare = new Chart(canvas, {
     type:'radar',
@@ -1358,6 +1647,192 @@ function escapeHtml(value) {
     .replaceAll("'", '&#39;');
 }
 
+async function requestJson(url, options={}) {
+  const response = await fetch(url, options);
+  let data;
+  try {
+    data = await response.json();
+  } catch(_) {
+    throw new Error(`Resposta inválida do servidor (${response.status})`);
+  }
+  if(!response.ok || data.error) {
+    throw new Error(data.error || `Falha HTTP ${response.status}`);
+  }
+  return data;
+}
+
+function runtimeValue(value) {
+  return value == null ? 0 : value;
+}
+
+async function loadContainerRuntime() {
+  const host = document.getElementById('docker-runtime-controls');
+  if(!host) return;
+  host.innerHTML = '<div style="color:var(--sub);font-size:.82rem">Consultando o Docker...</div>';
+  try {
+    const data = await requestJson('/api/containers');
+    const labels = {vision:'Visão', slm:'SLM', audio:'Áudio'};
+    host.innerHTML = `<table>
+      <tr>
+        <th>Container</th><th>Estado</th><th>CPU</th><th>RAM (MB)</th>
+        <th>Processos</th><th>SHM (MB)</th><th>Ações</th>
+      </tr>
+      ${['vision','slm','audio'].map(front => {
+        const item = data[front] || {};
+        if(item.error) {
+          return `<tr>
+            <td>${labels[front]}</td><td><span class="badge b-err">Indisponível</span></td>
+            <td colspan="4" style="color:var(--sub)">${escapeHtml(item.error)}</td>
+            <td><button class="btn sm" onclick="loadContainerRuntime()">Atualizar</button></td>
+          </tr>`;
+        }
+        const stateClass = item.running ? 'b-ok' : 'b-err';
+        return `<tr>
+          <td>${labels[front]}<div style="color:var(--dim);font-size:.7rem">${escapeHtml(item.name)}</div></td>
+          <td><span class="badge ${stateClass}">${escapeHtml(item.status || 'desconhecido')}</span></td>
+          <td><input class="runtime-input" id="docker-cpu-${front}" type="number" min="0" max="1024" step="0.1" value="${runtimeValue(item.cpu_limit)}" title="Quantidade máxima de CPUs; zero remove o limite"></td>
+          <td><input class="runtime-input" id="docker-memory-${front}" type="number" min="0" max="1048576" step="64" value="${runtimeValue(item.memory_limit_mb)}" title="Memória máxima em MB; zero remove o limite"></td>
+          <td><input class="runtime-input" id="docker-pids-${front}" type="number" min="0" max="4194304" step="1" value="${runtimeValue(item.pids_limit)}" title="Quantidade máxima de processos; zero remove o limite"></td>
+          <td>${runtimeValue(item.shm_size_mb)}</td>
+          <td>
+            <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+              <button class="btn sm primary" onclick="updateContainerLimits('${front}', this)">Aplicar</button>
+              <button class="btn sm" onclick="restartContainer('${front}', this)">Reiniciar</button>
+            </div>
+            <div id="docker-status-${front}" style="color:var(--sub);font-size:.7rem;margin-top:4px"></div>
+          </td>
+        </tr>`;
+      }).join('')}
+    </table>`;
+  } catch(error) {
+    host.innerHTML = `<div style="color:var(--red);font-size:.82rem">${escapeHtml(error.message)}</div>`;
+  }
+}
+
+async function updateContainerLimits(front, button) {
+  const status = document.getElementById(`docker-status-${front}`);
+  if(button) button.disabled = true;
+  if(status) status.textContent = 'Aplicando...';
+  try {
+    await requestJson('/api/containers/update', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        front,
+        cpu_limit:document.getElementById(`docker-cpu-${front}`).value,
+        memory_limit_mb:document.getElementById(`docker-memory-${front}`).value,
+        pids_limit:document.getElementById(`docker-pids-${front}`).value,
+      }),
+    });
+    toast(`Limites de ${front} atualizados`);
+    await loadContainerRuntime();
+  } catch(error) {
+    if(status) status.textContent = error.message;
+    if(button) button.disabled = false;
+  }
+}
+
+async function restartContainer(front, button) {
+  if(!window.confirm(`Reiniciar o container ${front}?`)) return;
+  const status = document.getElementById(`docker-status-${front}`);
+  if(button) button.disabled = true;
+  if(status) status.textContent = 'Reiniciando...';
+  try {
+    await requestJson('/api/containers/restart', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({front}),
+    });
+    toast(`Container ${front} reiniciado`);
+    await loadContainerRuntime();
+    await fetchMetrics();
+  } catch(error) {
+    if(status) status.textContent = error.message;
+    if(button) button.disabled = false;
+  }
+}
+
+function setHardwareField(id, value) {
+  const field = document.getElementById(id);
+  if(field) field.value = value == null ? '' : value;
+}
+
+async function loadHardwareConfig() {
+  const status = document.getElementById('hardware-config-status');
+  try {
+    const data = await requestJson('/api/hardware-config');
+    const profile = data.profile || {};
+    const cost = data.cost_model || {};
+    setHardwareField('hardware-profile-id', profile.id || '');
+    setHardwareField('hardware-description', profile.description || '');
+    setHardwareField('hardware-currency', cost.currency || 'BRL');
+    setHardwareField('hardware-price', cost.hardware_price);
+    setHardwareField('hardware-electricity', cost.electricity_per_kwh);
+    setHardwareField('hardware-amortization', cost.amortization_hours);
+    if(status) status.textContent = '';
+  } catch(error) {
+    if(status) status.textContent = `Erro: ${error.message}`;
+  }
+}
+
+async function loadDetectedHardware(refresh=false) {
+  const host = document.getElementById('hw-accelerators');
+  if(!host) return;
+  host.innerHTML = '<div style="color:var(--sub);font-size:.82rem">Detectando hardware...</div>';
+  try {
+    const data = await requestJson('/api/hardware-detect' + (refresh ? '?refresh=1' : ''));
+    const hardware = data.hardware || {};
+    const cpu = hardware.cpu || {};
+    const flags = Object.entries(cpu.flags || {}).filter(([, enabled]) => enabled).map(([name]) => name);
+    const accelerators = hardware.accelerators?.devices || [];
+    const serial = hardware.serial?.devices || [];
+    const acceleratorRows = accelerators.map(item => `<tr>
+      <td>${escapeHtml(item.category || '?')}</td>
+      <td>${escapeHtml(item.driver || '—')}</td>
+      <td>${escapeHtml(item.address || item.path || '—')}</td>
+      <td>${escapeHtml([item.vendor_id, item.device_id].filter(Boolean).join(' / ') || '—')}</td>
+    </tr>`).join('');
+    const serialRows = serial.map(item => `<tr>
+      <td>serial</td><td>—</td><td>${escapeHtml(item.path || '—')}</td><td>${escapeHtml(item.device || '—')}</td>
+    </tr>`).join('');
+    host.innerHTML = `
+      <div style="font-size:.78rem;color:var(--sub);margin-bottom:8px">
+        Inventário: <b>${escapeHtml(data.hardware_id || '?')}</b> · Arquitetura: <b>${escapeHtml(cpu.arch || '?')}</b> · Instruções: ${escapeHtml(flags.join(', ') || 'nenhuma identificada')}
+      </div>
+      ${(acceleratorRows || serialRows) ? `<table>
+        <tr><th>Tipo</th><th>Driver</th><th>Endereço/dispositivo</th><th>Identificação</th></tr>
+        ${acceleratorRows}${serialRows}
+      </table>` : '<div style="color:var(--sub);font-size:.82rem">Nenhum acelerador ou dispositivo serial exposto ao host.</div>'}
+    `;
+  } catch(error) {
+    host.innerHTML = `<div style="color:var(--red);font-size:.82rem">${escapeHtml(error.message)}</div>`;
+  }
+}
+
+async function saveHardwareConfig() {
+  const status = document.getElementById('hardware-config-status');
+  if(status) status.textContent = 'Salvando...';
+  try {
+    await requestJson('/api/hardware-config', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        profile_id:document.getElementById('hardware-profile-id').value,
+        description:document.getElementById('hardware-description').value,
+        currency:document.getElementById('hardware-currency').value,
+        hardware_price:document.getElementById('hardware-price').value,
+        electricity_per_kwh:document.getElementById('hardware-electricity').value,
+        amortization_hours:document.getElementById('hardware-amortization').value,
+      }),
+    });
+    if(status) status.textContent = 'Custos salvos';
+    toast('Configuração de hardware salva');
+    await fetchMetrics();
+  } catch(error) {
+    if(status) status.textContent = `Erro: ${error.message}`;
+  }
+}
+
 async function loadConfig() {
   try {
     const r = await fetch('/api/config');
@@ -1379,7 +1854,11 @@ async function saveConfig() {
       body: JSON.stringify({yaml_text: text})
     });
     const d = await r.json();
-    if(d.status === 'ok') { toast('Configuração salva!'); document.getElementById('cfg-status').textContent = 'Salvo com sucesso'; }
+    if(d.status === 'ok') {
+      toast('Configuração salva!');
+      document.getElementById('cfg-status').textContent = 'Salvo com sucesso';
+      await loadBenchmarkProfiles();
+    }
     else { document.getElementById('cfg-status').textContent = 'Erro: '+(d.error||'?'); }
   } catch(e) { document.getElementById('cfg-status').textContent = 'Erro: '+e.message; }
 }
@@ -1448,6 +1927,7 @@ function resetModelForm() {
   document.getElementById('model-filename').value = '';
   document.getElementById('model-size-mb').value = '';
   document.getElementById('model-min-ram').value = '';
+  document.getElementById('model-sha256').value = '';
   document.getElementById('model-gpu-capable').checked = true;
   document.getElementById('model-set-default').checked = false;
   document.getElementById('model-activate-now').checked = true;
@@ -1475,6 +1955,7 @@ function editModel(target, key) {
   document.getElementById('model-filename').value = cfg.filename || '';
   document.getElementById('model-size-mb').value = cfg.size_mb ?? '';
   document.getElementById('model-min-ram').value = cfg.min_ram_gb ?? '';
+  document.getElementById('model-sha256').value = cfg.sha256 || '';
   document.getElementById('model-gpu-capable').checked = cfg.gpu_capable !== false;
   document.getElementById('model-set-default').checked = !!item.default;
   document.getElementById('model-activate-now').checked = true;
@@ -1498,6 +1979,7 @@ function collectModelPayload() {
     filename: document.getElementById('model-filename').value.trim(),
     size_mb: document.getElementById('model-size-mb').value.trim(),
     min_ram_gb: document.getElementById('model-min-ram').value.trim(),
+    sha256: document.getElementById('model-sha256').value.trim(),
     gpu_capable: document.getElementById('model-gpu-capable').checked,
     set_default: document.getElementById('model-set-default').checked,
     activate_now: document.getElementById('model-activate-now').checked,
@@ -1681,6 +2163,7 @@ function populateModelSelect(id, models, preserveSelection=true) {
 fetchMetrics();
 setInterval(fetchMetrics, 3000);
 loadConfig();
+loadBenchmarkProfiles();
 loadModels(false);
 loadModelCatalog();
 resetModelForm();

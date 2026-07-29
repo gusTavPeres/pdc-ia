@@ -1,16 +1,16 @@
 profile:
-  id: local-rtx-a2000
-  description: Bancada local x86_64 com NVIDIA RTX A2000
+  id: nao-configurado
+  description: Configure esta bancada antes de comparar custos.
 cost_model:
   currency: BRL
-  hardware_price: 7000.0
-  electricity_per_kwh: 1.17
-  amortization_hours: 8760.0
+  hardware_price:
+  electricity_per_kwh:
+  amortization_hours:
 measurement:
-  power_source: gpu_nvml
+  power_source: auto
   notes:
   - GPU via NVML/nvidia-smi quando disponível.
-  - CPU package power depende de RAPL/powercap ou medidor externo.
+  - CPU package via RAPL/powercap quando disponível.
 score_references:
   vision:
     ops_per_sec: 30.0

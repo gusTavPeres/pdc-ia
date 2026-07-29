@@ -3,8 +3,9 @@
 import io
 import os
 import sys
+import threading
 import time
-from typing import Optional
+from functools import wraps
 
 sys.path.insert(0, "/app")
 
@@ -13,8 +14,18 @@ _asr_model = None
 _asr_device = "cpu"
 _asr_compute_type = "int8"
 _asr_model_id = None
+_asr_lock = threading.RLock()
 
 
+def _serialized(function):
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        with _asr_lock:
+            return function(*args, **kwargs)
+    return wrapped
+
+
+@_serialized
 def load_asr(config: dict) -> None:
     """Carrega o modelo ASR configurado."""
     global _asr_model, _asr_device, _asr_compute_type, _asr_model_id
@@ -22,47 +33,49 @@ def load_asr(config: dict) -> None:
     from faster_whisper import WhisperModel
 
     model_id = config.get("model_id", "small")
-    _asr_model_id = model_id
 
     gpu_mode = os.environ.get("PDC_GPU_MODE", "auto")
+    device = "cpu"
+    compute_type = "int8"
     try:
         import ctranslate2
         cuda_types = ctranslate2.get_supported_compute_types("cuda")
         if cuda_types and gpu_mode != "cpu":
-            _asr_device = "cuda"
-            _asr_compute_type = "float16"
-        else:
-            _asr_device = "cpu"
-            _asr_compute_type = "int8"
+            device = "cuda"
+            compute_type = "float16"
     except Exception:
-        _asr_device = "cpu"
-        _asr_compute_type = "int8"
+        pass
 
     try:
-        print(f"[asr] Carregando Whisper {model_id} em {_asr_device.upper()}...")
-        _asr_model = WhisperModel(
+        print(f"[asr] Carregando Whisper {model_id} em {device.upper()}...")
+        model = WhisperModel(
             model_id,
-            device=_asr_device,
-            compute_type=_asr_compute_type,
+            device=device,
+            compute_type=compute_type,
             download_root="/app/data/models",
         )
-        print(f"[asr] Whisper carregado em {_asr_device.upper()}")
-    except Exception as e:
-        if _asr_device == "cuda":
-            print(f"[asr] GPU falhou: {e}. Tentando CPU...")
-            _asr_device = "cpu"
-            _asr_compute_type = "int8"
-            _asr_model = WhisperModel(
+    except Exception as exc:
+        if device == "cuda":
+            print(f"[asr] GPU falhou: {exc}. Tentando CPU...")
+            device = "cpu"
+            compute_type = "int8"
+            model = WhisperModel(
                 model_id,
                 device="cpu",
                 compute_type="int8",
                 download_root="/app/data/models",
             )
-            print("[asr] Whisper carregado em CPU (fallback)")
         else:
             raise
 
+    _asr_model = model
+    _asr_model_id = model_id
+    _asr_device = device
+    _asr_compute_type = compute_type
+    print(f"[asr] Whisper carregado em {device.upper()}")
 
+
+@_serialized
 def transcribe(audio_bytes: bytes) -> dict:
     """Transcreve áudio WAV e retorna texto, segmentos e tempo de execução."""
     global _asr_model

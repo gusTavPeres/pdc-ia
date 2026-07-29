@@ -1,20 +1,16 @@
-"""
-inference.py — Inferência SLM via llama-cpp-python.
+"""Carga e inferência de modelos GGUF com llama.cpp."""
 
-Suporta múltiplos modelos GGUF com troca em runtime via load_model().
-Formatos de prompt suportados: tinyllama, chatml (Qwen2.5, Phi-3, etc.)
-"""
-
+import gc
 import os
 import sys
+import threading
 import time
-import random
+from functools import wraps
 from typing import Optional
 
 sys.path.insert(0, "/app")
 
 from shared.model_loader import get_or_download
-
 
 # Estado global do modelo carregado
 _model = None
@@ -23,22 +19,20 @@ _model_path = None
 _n_gpu_layers = 0
 _chat_format = "tinyllama"   # tinyllama | chatml
 _prompts_cache = []
+_benchmark_max_tokens = 80
+_model_lock = threading.RLock()
+
+
+def _serialized(function):
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        with _model_lock:
+            return function(*args, **kwargs)
+    return wrapped
 
 
 def _build_prompt(user_text: str, chat_format: str) -> str:
-    """
-    Formata o prompt no estilo do modelo.
-
-    TinyLlama usa seu próprio template de chat.
-    ChatML é usado por Qwen2.5, Phi-3, etc.
-
-    Args:
-        user_text: Pergunta/instrução do usuário.
-        chat_format: "tinyllama" ou "chatml"
-
-    Retorna:
-        Prompt formatado pronto para enviar ao modelo.
-    """
+    """Aplica o template de chat exigido pelo modelo."""
     if chat_format == "chatml":
         # Formato ChatML: <|im_start|>role\ncontent<|im_end|>
         return (
@@ -71,34 +65,31 @@ def _stop_tokens(chat_format: str) -> list:
         return ["</s>", "<|user|>", "<|system|>"]
 
 
+@_serialized
 def load_model(config: dict, dataset_config: Optional[dict] = None) -> None:
-    """
-    Carrega modelo GGUF. Pode ser chamado novamente para trocar de modelo.
+    """Baixa e carrega um GGUF, com fallback de GPU para CPU."""
+    global _model, _model_name, _model_path, _n_gpu_layers, _chat_format
+    global _prompts_cache, _benchmark_max_tokens
 
-    Baixa o arquivo se necessário, detecta GPU e carrega via llama-cpp-python.
-    Se GPU falhar, usa CPU como fallback.
+    model_path = get_or_download(config, cache_dir="/app/data/models")
+    model_name = os.path.basename(model_path)
+    chat_format = config.get("chat_format", "tinyllama")
 
-    Args:
-        config: Dict do models.yaml (url, gpu_layers, context_length, chat_format, ...)
-        dataset_config: Dict do datasets.yaml com prompts para benchmark.
-    """
-    global _model, _model_name, _model_path, _n_gpu_layers, _chat_format, _prompts_cache
-
-    # Descarrega modelo anterior se houver
     if _model is not None:
         print(f"[slm] Descarregando modelo anterior: {_model_name}")
         del _model
         _model = None
+        gc.collect()
 
-    # Baixa se necessário
-    _model_path = get_or_download(config, cache_dir="/app/data/models")
-    _model_name = os.path.basename(_model_path)
-    _chat_format = config.get("chat_format", "tinyllama")
+    _model_path = model_path
+    _model_name = model_name
+    _chat_format = chat_format
     print(f"[slm] Carregando: {_model_name} (formato: {_chat_format})")
 
     # Prompts do dataset
     if dataset_config and "prompts" in dataset_config:
         _prompts_cache = dataset_config["prompts"]
+        _benchmark_max_tokens = int(dataset_config.get("max_tokens", 80))
 
     # Parâmetros
     context_length = config.get("context_length", 2048)
@@ -108,7 +99,7 @@ def load_model(config: dict, dataset_config: Optional[dict] = None) -> None:
 
     from llama_cpp import Llama
 
-    # Tenta GPU, fallback CPU
+    # A CPU mantém o serviço disponível quando o backend CUDA falha.
     if desired_gpu_layers > 0:
         try:
             _model = Llama(
@@ -130,22 +121,12 @@ def load_model(config: dict, dataset_config: Optional[dict] = None) -> None:
         verbose=False,
     )
     _n_gpu_layers = 0
-    print(f"[slm] Carregado em CPU")
+    print("[slm] Carregado em CPU")
 
 
+@_serialized
 def generate(prompt: str, max_tokens: int = 150) -> dict:
-    """
-    Gera texto a partir de um prompt.
-
-    Usa o formato de prompt correto para o modelo carregado.
-
-    Args:
-        prompt: Texto de entrada.
-        max_tokens: Máximo de tokens a gerar.
-
-    Retorna:
-        dict com response, tokens_per_sec, time_to_first_token_ms, total_tokens
-    """
+    """Gera texto e registra tokens, duração e tempo até o primeiro token."""
     if _model is None:
         raise RuntimeError("Modelo não carregado")
 
@@ -154,39 +135,46 @@ def generate(prompt: str, max_tokens: int = 150) -> dict:
 
     first_token_time = None
     t_start = time.perf_counter()
-    tokens_generated = 0
     response_text = ""
 
     for token in _model(formatted, max_tokens=max_tokens, stream=True, stop=stop, echo=False):
-        if first_token_time is None:
+        text = token["choices"][0]["text"]
+        if text and first_token_time is None:
             first_token_time = time.perf_counter()
-        response_text += token["choices"][0]["text"]
-        tokens_generated += 1
+        response_text += text
 
     t_end = time.perf_counter()
     total_time = t_end - t_start
+    tokens_generated = len(_model.tokenize(
+        response_text.encode("utf-8"), add_bos=False, special=False)) if response_text else 0
+    prompt_tokens = len(_model.tokenize(
+        formatted.encode("utf-8"), add_bos=True, special=True))
 
     return {
         "response": response_text.strip(),
         "tokens_per_sec": round(tokens_generated / total_time, 2) if total_time > 0 else 0,
         "time_to_first_token_ms": round((first_token_time - t_start) * 1000, 2) if first_token_time else None,
         "total_tokens": tokens_generated,
-        "prompt_tokens": len(formatted) // 4,
+        "prompt_tokens": prompt_tokens,
+        "generation_sec": round(total_time, 4),
         "model": _model_name,
     }
 
 
 def get_benchmark_fn():
-    """Retorna closure para benchmark: sorteia prompt e gera."""
+    """Retorna uma carga determinística com os prompts configurados."""
     default_prompts = [
         "Explique o que é inteligência artificial em 3 frases.",
         "O que é edge computing?",
         "Descreva como funciona um motor elétrico.",
     ]
     prompts = _prompts_cache if _prompts_cache else default_prompts
+    prompt_index = [0]
 
     def benchmark_inference():
-        return generate(random.choice(prompts), max_tokens=80)
+        prompt = prompts[prompt_index[0] % len(prompts)]
+        prompt_index[0] += 1
+        return generate(prompt, max_tokens=_benchmark_max_tokens)
 
     return benchmark_inference
 
@@ -196,13 +184,13 @@ def get_device() -> str:
 
 
 def get_model_name() -> str:
-    return _model_name
+    return _model_name if _model is not None else "não carregado"
 
 
 def get_loaded_config() -> dict:
     """Retorna info do modelo atualmente carregado."""
     return {
-        "name": _model_name,
+        "name": get_model_name(),
         "device": get_device(),
         "gpu_layers": _n_gpu_layers,
         "chat_format": _chat_format,

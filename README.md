@@ -1,26 +1,39 @@
-# Hardware Tester AI
+# PDC-IA Hardware Tester
 
-Ferramenta local para medir desempenho de hardware executando cargas reais de visão, linguagem e áudio em containers separados.
+Plataforma local para executar cargas de visão, linguagem e áudio em containers
+separados e registrar desempenho, consumo de recursos e contexto do hardware.
 
-O projeto foi montado para comparar máquinas x86, ARM, SBCs e aceleradores de forma consistente. Os modelos não ficam no Git; eles são baixados para `data/models/` conforme a configuração em `config/models.yaml`.
+Os modelos ficam em `data/models/` e os resultados em `results/`. Nenhum desses
+arquivos é versionado.
 
-## Componentes
+## Escopo da V1
 
-- `vision`: detecção de objetos com modelos YOLO.
-- `slm`: geração de texto com modelos GGUF via `llama-cpp-python`.
-- `audio`: ASR com `faster-whisper` e TTS com Piper.
-- `metrics_server.py`: dashboard local e API de controle.
-- `pdc`: CLI para build, status, benchmarks, resultados e modelos.
-- `shared/`: coleta de métricas, execução de benchmark, metodologia e scorecard.
+- visão: detecção de objetos com YOLO;
+- SLM: geração de texto em GGUF com `llama-cpp-python`;
+- áudio: ASR com `faster-whisper` e TTS com Piper;
+- execução CPU em containers portáveis;
+- variante CUDA para GPU NVIDIA em visão, SLM e ASR;
+- inventário de CPU, RAM, armazenamento, GPU, aceleradores PCI e interfaces
+  seriais;
+- métricas por container via cgroup, com fallback explícito quando a telemetria
+  não está disponível;
+- score de desempenho e estimativas de custo quando a bancada está configurada.
+
+NPU, TPU, ROCm, OpenVINO e upload para microcontroladores ainda não possuem
+adaptadores de execução. Esses dispositivos podem aparecer no inventário, mas
+isso não significa que a carga foi executada neles. Consulte
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) para a matriz de suporte.
 
 ## Requisitos
 
-- Linux com Docker e Docker Compose.
-- Python 3.10+ no host.
-- NVIDIA Driver + `nvidia-container-toolkit` para testes com GPU NVIDIA.
-- Espaço em disco para modelos em `data/models/`.
+- Linux com Docker e Docker Compose;
+- Python 3.10 ou mais recente no host;
+- espaço em disco para imagens Docker e modelos;
+- NVIDIA Driver e `nvidia-container-toolkit` somente para a variante CUDA.
 
-O sistema também roda sem GPU NVIDIA, mas as métricas de CUDA, VRAM, potência e temperatura ficam indisponíveis ou parciais.
+O modo CPU não depende de uma GPU NVIDIA. Sem telemetria compatível, VRAM,
+potência e temperatura permanecem ausentes em vez de serem estimadas.
+Piper TTS executa em CPU também na variante GPU desta versão.
 
 ## Primeiro Uso
 
@@ -28,149 +41,137 @@ O sistema também roda sem GPU NVIDIA, mas as métricas de CUDA, VRAM, potência
 git clone https://github.com/PDC-EAI/hardware-tester-ai.git
 cd hardware-tester-ai
 
-python3 -m pip install -r shared/requirements.txt
-
+./pdc setup
 ./pdc models download defaults
 ./pdc build all
 ./pdc up all
 ./pdc status
-
-python3 metrics_server.py
+./pdc dashboard
 ```
 
-Dashboard:
+Abra `http://127.0.0.1:8099`. O dashboard e as APIs escutam somente no host
+local. Para acesso remoto, encaminhe a porta por SSH:
 
-```text
-http://localhost:8099
+```bash
+ssh -L 8099:127.0.0.1:8099 usuario@maquina
 ```
+
+Antes de comparar custos, preencha `Hardware > Hardware e custo operacional`.
+O arquivo versionado não contém preço ou tarifa de uma bancada específica.
 
 ## Modelos
-
-Os modelos são definidos em `config/models.yaml` e baixados para `data/models/`, que é ignorado pelo Git.
-
-Comandos úteis:
 
 ```bash
 ./pdc models list
 ./pdc models download defaults
 ./pdc models download all
-./pdc models download slm tinyllama-1.1b-q4
+./pdc models download vision yolo11n
+./pdc models download slm qwen3-4b-q4
 ./pdc models download audio_tts --defaults
 ```
 
-`defaults` baixa apenas os modelos padrão de cada frente. `all` baixa todos os modelos com URL direta. Modelos ASR do `faster-whisper` usam `model_id` e podem ser baixados pelo runtime no primeiro carregamento do container.
+`defaults` baixa os modelos padrão. `all` baixa todos os itens que possuem URL
+direta e pode consumir vários gigabytes. Modelos ASR definidos por `model_id`
+são obtidos pelo runtime no primeiro carregamento.
 
-Também é possível cadastrar modelos pelo dashboard em `Configuração > Modelos`. Para Hugging Face, use o link do arquivo do modelo; links com `/blob/` são convertidos para `/resolve/`. Para SLM, use arquivos `.gguf`. Para TTS, use o `.onnx`; o `.onnx.json` é inferido quando possível.
+Também é possível cadastrar, ativar e remover modelos em
+`Configuração > Modelos`. Links de arquivo do Hugging Face, GitHub Releases e
+outros servidores HTTP são aceitos. SLM usa `.gguf`; visão usa `.pt`; Piper usa
+o par `.onnx` e `.onnx.json`. Ollama não é importado diretamente.
 
-Mais detalhes: [`docs/MODELS.md`](docs/MODELS.md).
+Detalhes: [`docs/MODELS.md`](docs/MODELS.md).
 
 ## Benchmarks
-
-Pelo CLI:
 
 ```bash
 ./pdc benchmark vision --profile quick
 ./pdc benchmark slm --profile quick
-./pdc benchmark audio --profile quick
+./pdc benchmark audio --profile quick --mode asr
+./pdc benchmark audio --profile quick --mode tts
+./pdc benchmark audio --profile quick --mode pipeline
 ./pdc benchmark all --profile express
 ```
 
-Pelo dashboard, use a aba `Benchmarks` para escolher modelo e perfil.
-
 Perfis padrão:
 
-| Perfil | Uso | Duração aproximada |
-| --- | --- | --- |
-| `express` | Sanidade rápida | 15s |
-| `quick` | Teste curto | 30s |
-| `standard` | Comparação principal | 2min |
-| `extended` | Carga sustentada | 10min |
+| Perfil | Finalidade | Duração fixa mínima |
+| --- | --- | ---: |
+| `express` | verificação rápida | 20 s + 10 amostras de latência |
+| `quick` | execução curta | 30 s + 15 amostras de latência |
+| `standard` | comparação principal | 3 min 30 s + 40 amostras |
+| `extended` | carga sustentada | 14 min + 200 amostras |
 
-Os parâmetros ficam em `config/benchmark.yaml`.
+A duração real inclui aquecimento e o tempo de cada inferência. Os parâmetros
+ficam em `config/benchmark.yaml`. Para comparar hardware, execute uma frente por
+vez; cargas concorrentes compartilham CPU, memória e telemetria de dispositivo.
 
 ## Resultados
-
-Os resultados são salvos em `results/*.json`, fora do Git.
 
 ```bash
 ./pdc results
 ./pdc results --latest
 ./pdc results --scorecard
+./pdc results --compare arquivo-a.json arquivo-b.json
 ```
 
-O dashboard mostra throughput, latência, uso de RAM/VRAM/GPU, temperatura, energia estimada, score e custo por unidade quando há telemetria suficiente.
+Cada execução gera um único JSON com `run_id`. O resultado separa:
 
-A metodologia de comparação está em [`docs/METHODOLOGY.md`](docs/METHODOLOGY.md).
+- inventário físico do host em `system_info`;
+- dispositivos visíveis ao container em `system_info.runtime_visibility`;
+- política de execução em `metadata.execution`;
+- métricas e seus escopos em `benchmark_results`;
+- indicadores derivados em `scorecard`.
 
-## Hardware e Custo
+O CLI atualiza `data/hardware/host.json` antes de subir containers e antes de
+executar benchmarks. Isso evita registrar o filesystem `overlay` como se fosse
+o SSD ou eMMC físico.
 
-Edite `config/hardware.yaml` para registrar o perfil da bancada, preço do hardware, custo de energia e referências de score.
-
-Esses dados não mudam o benchmark bruto. Eles só alimentam campos derivados como custo por 1k operações, energia por operação e score relativo.
+Contrato dos campos: [`docs/RESULTS.md`](docs/RESULTS.md). Regras de comparação:
+[`docs/METHODOLOGY.md`](docs/METHODOLOGY.md).
 
 ## Operação
 
 ```bash
+./pdc detect
+./pdc detect --json
 ./pdc detect --save
-./pdc build all
-./pdc up all
+./pdc build all --cpu
+./pdc up all --cpu
 ./pdc status
 ./pdc down all
 ```
 
-`./pdc up` detecta GPU NVIDIA automaticamente. Para forçar modo:
+Sem `--cpu` ou `--gpu`, o CLI usa a variante NVIDIA apenas quando
+`nvidia-smi` e o runtime estão funcionais. Os limites configurados em
+`Hardware > Limites de execução` são reaplicados no próximo `up`.
+
+Valor zero não adiciona limite pelo Docker. Políticas herdadas do host ainda
+podem aparecer como limites efetivos no resultado. `/dev/shm` usa 256 MB por
+padrão e pode ser alterado na criação:
 
 ```bash
-./pdc up all --gpu
-./pdc up all --cpu
+PDC_SHM_SIZE=1g ./pdc up vision --cpu
 ```
 
-Para reiniciar uma frente:
+## Documentação
 
-```bash
-./pdc down slm
-./pdc up slm
-```
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md): componentes, fluxo e suporte
+  de hardware;
+- [`docs/RESULTS.md`](docs/RESULTS.md): esquema dos resultados e escopo das
+  métricas;
+- [`docs/METHODOLOGY.md`](docs/METHODOLOGY.md): regras de medição e comparação;
+- [`docs/MODELS.md`](docs/MODELS.md): cadastro e cache de modelos;
+- [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md): ambiente, validação e APIs.
 
-## Desenvolvimento
+## Limitações Conhecidas
 
-Validação rápida:
-
-```bash
-python3 -m py_compile metrics_server.py shared/*.py vision/app/*.py slm/app/*.py audio/app/*.py
-python3 vision/test/test_vision.py
-python3 slm/test/test_slm.py
-python3 audio/test/test_audio.py
-```
-
-Para rodar com `pytest` sem alterar o Python do sistema:
-
-```bash
-python3 -m venv .venv-test
-.venv-test/bin/pip install -r requirements-dev.txt
-.venv-test/bin/python -m pytest vision/test/test_vision.py slm/test/test_slm.py audio/test/test_audio.py
-```
-
-Notas de desenvolvimento: [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
-
-## Estrutura
-
-```text
-.
-├── audio/
-├── config/
-├── docs/
-├── shared/
-├── slm/
-├── vision/
-├── web/
-├── metrics_server.py
-└── pdc
-```
-
-## Limitações
-
-- NPU, TPU, OpenVINO, ROCm e aceleradores externos ainda precisam de adaptadores próprios.
-- ASR via `faster-whisper` pode baixar artefatos no primeiro carregamento quando o modelo é definido por `model_id`.
-- Métricas de energia fora de GPU NVIDIA dependem de RAPL/powercap ou medidor externo.
-- O CLI ativa o override de GPU quando detecta NVIDIA; use `./pdc up all --cpu` para forçar execução sem GPU.
+- ARM64 é um alvo da imagem CPU, mas cada placa precisa ser validada porque a
+  disponibilidade de wheels varia por runtime e distribuição;
+- energia de CPU depende de acesso a RAPL/powercap;
+- utilização e potência de GPU podem representar o dispositivo inteiro quando
+  o driver não oferece atribuição por processo;
+- os datasets atuais priorizam repetibilidade e sanidade operacional; não são
+  rankings de qualidade dos modelos;
+- resultados antigos sem versão ou escopo continuam legíveis, mas aparecem
+  como legados e não devem ser misturados automaticamente com a metodologia
+  atual.

@@ -1,21 +1,15 @@
-"""
-methodology.py — Shared benchmark methodology metadata and result helpers.
+"""Metadados e utilitários comuns aos resultados de benchmark."""
 
-The schema here is intentionally architecture-neutral. It describes the
-workload, sampling policy, errors, and comparability constraints without
-assuming x86, ARM, NVIDIA, CPU-only, or accelerator-specific behavior.
-"""
-
+import math
 import platform
 import statistics
 from typing import Any, Dict, Iterable, List, Optional
 
-
-METHODOLOGY_VERSION = "2026.05-v1"
+METHODOLOGY_VERSION = "2026.07-v2"
 
 
 def base_methodology(profile_name: Optional[str], profile_config: dict) -> dict:
-    """Return methodology metadata embedded in every benchmark result."""
+    """Monta a metodologia registrada em cada resultado."""
     return {
         "version": METHODOLOGY_VERSION,
         "profile": profile_name or "unknown",
@@ -25,6 +19,8 @@ def base_methodology(profile_name: Optional[str], profile_config: dict) -> dict:
             "latency reported with percentiles from successful samples only",
             "failed inference calls are counted and reported",
             "resource samples are time-series snapshots during active load",
+            "resource metrics identify whether they describe the workload or the host device",
+            "energy and operation counts use the same measurement window",
             "scores are relative indicators and keep missing energy/cost explicit",
         ],
         "architecture_policy": {
@@ -41,41 +37,45 @@ def base_methodology(profile_name: Optional[str], profile_config: dict) -> dict:
 
 
 def benchmark_metadata(front: Optional[str], model: Any, mode: Optional[str],
-                       dataset: Optional[str]) -> dict:
+                       dataset: Optional[str], execution: Optional[dict] = None,
+                       profile: Optional[str] = None, run_id: Optional[str] = None) -> dict:
     return {
+        "run_id": run_id,
         "front": front,
         "model": model,
         "mode": mode,
         "dataset": dataset,
+        "profile": profile,
+        "execution": execution or {},
         "comparability_key": {
+            "methodology_version": METHODOLOGY_VERSION,
             "front": front,
             "model": model,
             "mode": mode,
             "dataset": dataset,
+            "profile": profile,
+            "execution": execution or {},
         },
     }
 
 
-def summarize_errors(errors: Iterable[str], limit: int = 5) -> dict:
+def summarize_errors(errors: Iterable[str], limit: int = 5,
+                     total_count: Optional[int] = None) -> dict:
     errors = list(errors)
     counts: Dict[str, int] = {}
     for err in errors:
         key = str(err)[:180]
         counts[key] = counts.get(key, 0) + 1
     return {
-        "count": len(errors),
+        "count": total_count if total_count is not None else len(errors),
+        "sampled_count": len(errors),
         "unique": len(counts),
         "samples": sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:limit],
     }
 
 
 def summarize_numeric_result_fields(results: Iterable[Any]) -> dict:
-    """
-    Aggregate numeric fields from inference return dicts.
-
-    This captures domain metrics such as tokens_per_sec, rtf, duration_sec, or
-    time_to_first_token_ms without coupling the shared suite to one workload.
-    """
+    """Resume campos numéricos retornados pelas inferências."""
     fields: Dict[str, List[float]] = {}
     for item in results:
         if not isinstance(item, dict):
@@ -84,7 +84,9 @@ def summarize_numeric_result_fields(results: Iterable[Any]) -> dict:
             if isinstance(value, bool):
                 continue
             if isinstance(value, (int, float)):
-                fields.setdefault(key, []).append(float(value))
+                number = float(value)
+                if math.isfinite(number):
+                    fields.setdefault(key, []).append(number)
 
     summary = {}
     for key, values in fields.items():
@@ -92,11 +94,52 @@ def summarize_numeric_result_fields(results: Iterable[Any]) -> dict:
             continue
         summary[key] = {
             "avg": round(statistics.mean(values), 4),
+            "sum": round(sum(values), 4),
             "min": round(min(values), 4),
             "max": round(max(values), 4),
             "samples": len(values),
         }
     return summary
+
+
+class NumericResultAccumulator:
+    """Mantém estatísticas numéricas sem armazenar todas as respostas."""
+
+    def __init__(self):
+        self._fields = {}
+
+    def update(self, item: Any):
+        if not isinstance(item, dict):
+            return
+        for key, value in item.items():
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            number = float(value)
+            if not math.isfinite(number):
+                continue
+            field = self._fields.setdefault(key, {
+                "sum": 0.0,
+                "min": number,
+                "max": number,
+                "samples": 0,
+            })
+            field["sum"] += number
+            field["min"] = min(field["min"], number)
+            field["max"] = max(field["max"], number)
+            field["samples"] += 1
+
+    def summary(self) -> dict:
+        return {
+            key: {
+                "avg": round(field["sum"] / field["samples"], 4),
+                "sum": round(field["sum"], 4),
+                "min": round(field["min"], 4),
+                "max": round(field["max"], 4),
+                "samples": field["samples"],
+            }
+            for key, field in self._fields.items()
+            if field["samples"]
+        }
 
 
 def get_nested(data: dict, path: str, default=None):

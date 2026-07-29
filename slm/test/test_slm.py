@@ -2,29 +2,17 @@
 test_slm.py — Teste de integração do container SLM.
 """
 
-import sys
-import time
+import os
+
+import pytest
 import requests
 
+pytestmark = pytest.mark.skipif(
+    os.environ.get("PDC_RUN_INTEGRATION") != "1",
+    reason="defina PDC_RUN_INTEGRATION=1 para testar containers ativos",
+)
+
 BASE_URL = "http://localhost:8011"
-
-
-def wait_for_health(max_wait=400):
-    """Aguarda container ficar saudável (modelo ~637MB demora para baixar)."""
-    print(f"Aguardando SLM ficar saudável (máx {max_wait}s)...")
-    for i in range(max_wait // 10):
-        try:
-            r = requests.get(f"{BASE_URL}/health", timeout=5)
-            if r.status_code == 200 and r.json().get("status") == "ok":
-                print(f"Container saudável após ~{i*10}s")
-                return True
-        except Exception:
-            pass
-        time.sleep(10)
-        if i % 6 == 0:
-            print(f"  {i*10}s decorridos...")
-    return False
-
 
 def test_health():
     r = requests.get(f"{BASE_URL}/health", timeout=10)
@@ -49,27 +37,3 @@ def test_info():
     r = requests.get(f"{BASE_URL}/info", timeout=10)
     assert r.status_code == 200
     print(f"  Info OK: model={r.json().get('model', {}).get('name')}")
-
-
-if __name__ == "__main__":
-    print("=== Teste SLM Container ===")
-
-    if not wait_for_health():
-        print("FALHA: Container não ficou saudável")
-        sys.exit(1)
-
-    tests = [test_health, test_predict, test_info]
-    passed = failed = 0
-
-    for fn in tests:
-        try:
-            print(f"\nTestando {fn.__name__}...")
-            fn()
-            print("  PASSOU")
-            passed += 1
-        except Exception as e:
-            print(f"  FALHOU: {e}")
-            failed += 1
-
-    print(f"\nResultado: {passed} passou, {failed} falhou")
-    sys.exit(0 if failed == 0 else 1)

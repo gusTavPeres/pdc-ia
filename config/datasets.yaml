@@ -5,6 +5,9 @@ vision:
       type: "object_detection"
       source: "generate"
       samples: 10
+      seed: 42
+      width: 640
+      height: 640
       metrics: ["fps", "latency_ms"]
 
 slm:
@@ -13,7 +16,7 @@ slm:
     prompts_pt_20:
       type: "text_generation"
       source: "inline"
-      max_tokens: 150
+      max_tokens: 80
       prompts:
         - "Explique o que é inteligência artificial em 3 frases."
         - "Qual a diferença entre machine learning e deep learning?"

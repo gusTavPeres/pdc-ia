@@ -1,36 +1,35 @@
-"""
-inference_tts.py — Síntese de voz com Piper TTS (pt-BR).
-
-Usa a API correta do piper-tts 1.4+: voice.synthesize() retorna Iterable[AudioChunk].
-"""
+"""Síntese de voz com Piper TTS."""
 
 import io
 import os
 import sys
+import threading
+import time
 import wave
-import struct
-from typing import Optional
+from functools import wraps
 
 sys.path.insert(0, "/app")
 
 from shared.model_loader import get_or_download
 
-
 # Variáveis globais do TTS
 _tts_voice = None
 _tts_model_path = None
 _tts_config_path = None
+_tts_lock = threading.RLock()
 
 
+def _serialized(function):
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        with _tts_lock:
+            return function(*args, **kwargs)
+    return wrapped
+
+
+@_serialized
 def load_tts(config: dict) -> None:
-    """
-    Carrega modelo Piper TTS.
-
-    Baixa os arquivos .onnx e .onnx.json e inicializa PiperVoice.
-
-    Args:
-        config: Dict com "model_url" e "config_url".
-    """
+    """Baixa os artefatos ONNX e inicializa o Piper."""
     global _tts_voice, _tts_model_path, _tts_config_path
 
     model_dir = "/app/data/models"
@@ -40,60 +39,60 @@ def load_tts(config: dict) -> None:
     config_url = config.get("config_url", "")
     if config_url:
         config_filename = config_url.split("/")[-1].split("?")[0]
-        _tts_config_path = get_or_download(
+        config_path = get_or_download(
             {"url": config_url, "filename": config_filename},
             cache_dir=model_dir
         )
+    else:
+        config_path = None
 
     # Baixa modelo ONNX
     model_url = config.get("model_url", "")
     if model_url:
         model_filename = model_url.split("/")[-1].split("?")[0]
-        _tts_model_path = get_or_download(
-            {"url": model_url, "filename": model_filename},
+        model_path = get_or_download(
+            {
+                "url": model_url,
+                "filename": model_filename,
+                "sha256": config.get("sha256"),
+            },
             cache_dir=model_dir
         )
-        print(f"[tts] Modelo TTS: {_tts_model_path}")
+        print(f"[tts] Modelo TTS: {model_path}")
+    else:
+        model_path = None
 
-    # Carrega PiperVoice
+    if not model_path:
+        raise ValueError("URL do modelo TTS não configurada")
+
     try:
         from piper import PiperVoice
-        _tts_voice = PiperVoice.load(
-            _tts_model_path,
-            config_path=_tts_config_path,
+        voice = PiperVoice.load(
+            model_path,
+            config_path=config_path,
             use_cuda=False,
         )
+        _tts_voice = voice
+        _tts_model_path = model_path
+        _tts_config_path = config_path
         print("[tts] PiperVoice carregado com sucesso")
     except Exception as e:
-        print(f"[tts] ERRO ao carregar PiperVoice: {e}")
-        _tts_voice = None
+        raise RuntimeError(f"Falha ao carregar PiperVoice: {e}") from e
 
 
+@_serialized
 def synthesize(text: str) -> bytes:
-    """
-    Sintetiza texto em áudio WAV.
-
-    Usa a API do piper-tts 1.4+: voice.synthesize() → Iterable[AudioChunk].
-    Cada AudioChunk tem audio_int16_bytes, sample_rate, sample_channels, sample_width.
-
-    Args:
-        text: Texto para converter em voz.
-
-    Retorna:
-        bytes: Áudio em formato WAV (16-bit mono PCM).
-    """
+    """Sintetiza o texto e devolve áudio WAV em memória."""
     global _tts_voice
 
     if _tts_voice is None:
-        print("[tts] Modelo não carregado, usando fallback de silêncio")
-        return _generate_silence_wav()
+        raise RuntimeError("Modelo TTS não carregado")
 
     try:
-        # Coleta todos os chunks de áudio
         chunks = list(_tts_voice.synthesize(text))
 
         if not chunks:
-            return _generate_silence_wav()
+            raise RuntimeError("O modelo TTS não produziu áudio")
 
         # Usa parâmetros do primeiro chunk
         sample_rate = chunks[0].sample_rate
@@ -116,20 +115,24 @@ def synthesize(text: str) -> bytes:
         return wav_io.getvalue()
 
     except Exception as e:
-        print(f"[tts] Erro na síntese: {e}")
-        return _generate_silence_wav()
+        raise RuntimeError(f"Falha na síntese TTS: {e}") from e
 
 
-def _generate_silence_wav(sample_rate: int = 22050, duration_sec: float = 1.5) -> bytes:
-    """Gera WAV de silêncio como fallback."""
-    n_samples = int(sample_rate * duration_sec)
-    wav_io = io.BytesIO()
-    with wave.open(wav_io, "wb") as wav:
-        wav.setnchannels(1)
-        wav.setsampwidth(2)
-        wav.setframerate(sample_rate)
-        wav.writeframes(struct.pack(f"<{n_samples}h", *([0] * n_samples)))
-    return wav_io.getvalue()
+def synthesize_with_metrics(text: str) -> dict:
+    started = time.perf_counter()
+    audio = synthesize(text)
+    processing_sec = time.perf_counter() - started
+    with wave.open(io.BytesIO(audio), "rb") as wav:
+        sample_rate = wav.getframerate()
+        duration_sec = wav.getnframes() / sample_rate if sample_rate else 0.0
+    if duration_sec <= 0:
+        raise RuntimeError("O modelo TTS produziu áudio sem duração")
+    return {
+        "audio_bytes": len(audio),
+        "duration_sec": round(duration_sec, 4),
+        "processing_sec": round(processing_sec, 4),
+        "rtf": round(processing_sec / duration_sec, 4),
+    }
 
 
 def is_tts_loaded() -> bool:

@@ -1,15 +1,9 @@
-"""
-scorecard.py — Architecture-neutral hardware benchmark scorecard.
+"""Indicadores comparáveis de desempenho, eficiência e custo."""
 
-Scores are designed for comparing many hardware targets while staying honest
-about missing telemetry. They avoid architecture-specific assumptions and keep
-the raw primary metric visible beside derived efficiency/cost fields.
-"""
-
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from shared.methodology import get_nested
-
+from shared.result_parser import finite_number, first_number, normalize_resource_usage
 
 DEFAULT_REFERENCES = {
     "vision": {"metric": "ops_per_sec", "reference": 30.0, "unit": "frames/s"},
@@ -25,12 +19,7 @@ DEFAULT_METRIC_REFERENCES = {
 
 
 def _num(value: Any) -> Optional[float]:
-    if isinstance(value, bool) or value is None:
-        return None
-    try:
-        return float(value)
-    except Exception:
-        return None
+    return finite_number(value)
 
 
 def load_hardware_config(path: str = "/app/config/hardware.yaml") -> dict:
@@ -55,15 +44,36 @@ def _primary_metric(result: dict) -> dict:
     bench = result.get("benchmark_results", {})
     tp = bench.get("throughput", {})
     result_metrics = tp.get("result_metrics", {})
+    throughput_duration = _num(tp.get("duration_sec"))
 
     if front == "slm":
+        total_tokens = _num(get_nested(result_metrics, "total_tokens.sum"))
+        if total_tokens is not None and throughput_duration and throughput_duration > 0:
+            return {
+                "name": "tokens_per_sec",
+                "value": round(total_tokens / throughput_duration, 4),
+                "unit": "tokens/s",
+                "higher_is_better": True,
+            }
         tps = _num(get_nested(result_metrics, "tokens_per_sec.avg"))
         if tps is not None:
             return {"name": "tokens_per_sec", "value": tps, "unit": "tokens/s", "higher_is_better": True}
 
-    if front == "audio" and _mode(result) == "asr":
-        rtf = _num(get_nested(result, "pipeline_results.avg_rtf"))
-        if rtf and rtf > 0:
+    if front == "audio":
+        audio_duration = _num(get_nested(result_metrics, "duration_sec.sum"))
+        if audio_duration is not None and throughput_duration and throughput_duration > 0:
+            return {
+                "name": "audio_realtime_factor_inverse",
+                "value": round(audio_duration / throughput_duration, 4),
+                "unit": "x real-time",
+                "higher_is_better": True,
+            }
+        rtf = first_number(
+            get_nested(result, "pipeline_results.avg_rtf"),
+            get_nested(result_metrics, "pipeline_rtf.avg"),
+            get_nested(result_metrics, "rtf.avg"),
+        )
+        if rtf is not None and rtf > 0:
             return {"name": "audio_realtime_factor_inverse", "value": round(1.0 / rtf, 4),
                     "unit": "x real-time", "higher_is_better": True}
 
@@ -75,13 +85,29 @@ def _primary_metric(result: dict) -> dict:
 
 def _peak_or_avg_power(result: dict) -> Optional[float]:
     res = result.get("benchmark_results", {}).get("resource_usage", {})
-    avg_power = _num(res.get("avg_power_w"))
-    if avg_power is not None:
-        return avg_power
-    samples = res.get("timeseries", [])
-    vals = [_num(s.get("power_w") or s.get("gpu_power_w")) for s in samples if isinstance(s, dict)]
-    vals = [v for v in vals if v is not None]
-    return sum(vals) / len(vals) if vals else None
+    return normalize_resource_usage(res).get("avg_power_w")
+
+
+def _resource_primary_rate(result: dict, metric: dict, resource: dict) -> Optional[float]:
+    duration = _num(resource.get("measurement_duration_sec"))
+    operations = _num(resource.get("inference_success_count"))
+    if duration is None or duration <= 0 or operations is None:
+        return None
+
+    name = metric.get("name")
+    if name == "tokens_per_sec":
+        total_tokens = _num(get_nested(resource, "result_metrics.total_tokens.sum"))
+        if total_tokens is not None:
+            return total_tokens / duration
+        avg_tokens = _num(get_nested(resource, "result_metrics.total_tokens.avg"))
+        return operations * avg_tokens / duration if avg_tokens is not None else None
+    if name == "audio_realtime_factor_inverse":
+        total_audio_duration = _num(get_nested(resource, "result_metrics.duration_sec.sum"))
+        if total_audio_duration is not None:
+            return total_audio_duration / duration
+        avg_audio_duration = _num(get_nested(resource, "result_metrics.duration_sec.avg"))
+        return operations * avg_audio_duration / duration if avg_audio_duration is not None else None
+    return operations / duration
 
 
 def _cost_model(config: dict) -> dict:
@@ -118,30 +144,48 @@ def compute_scorecard(result: dict, hardware_config: Optional[dict] = None) -> d
     metric_value = _num(metric.get("value"))
     cm = _cost_model(hardware_config)
     power_w = _peak_or_avg_power(result)
-    energy_j = _num(get_nested(result, "benchmark_results.resource_usage.total_energy_j"))
-    total_ops = _num(get_nested(result, "benchmark_results.throughput.ops_total"))
-    duration_s = _num(get_nested(result, "benchmark_results.throughput.duration_sec"))
+    resource_raw = get_nested(result, "benchmark_results.resource_usage", {})
+    resource = normalize_resource_usage(resource_raw)
+    energy_j = _num(resource.get("total_energy_j"))
+    energy_coverage = _num(resource.get("energy_coverage_ratio"))
+    resource_ops = _num(resource.get("inference_success_count"))
+    resource_duration = _num(resource.get("measurement_duration_sec"))
+    resource_rate = _resource_primary_rate(result, metric, resource)
+    energy_derived = False
 
-    if energy_j is None and power_w is not None and duration_s is not None:
-        energy_j = power_w * duration_s
+    if ((energy_j is None or (energy_coverage is not None and energy_coverage < 0.9))
+            and power_w is not None and resource_duration is not None):
+        energy_j = power_w * resource_duration
+        energy_derived = True
 
-    energy_per_primary = None
-    if energy_j is not None and total_ops and total_ops > 0:
-        energy_per_primary = energy_j / total_ops
+    energy_per_op = None
+    if energy_j is not None and resource_ops is not None and resource_ops > 0:
+        energy_per_op = energy_j / resource_ops
 
-    primary_unit_count = total_ops
-    if metric.get("name") == "tokens_per_sec" and total_ops:
-        avg_tokens = _num(get_nested(result, "benchmark_results.throughput.result_metrics.total_tokens.avg"))
-        if avg_tokens is not None:
-            primary_unit_count = total_ops * avg_tokens
+    primary_unit_count = resource_ops
+    primary_count_unit = "operation"
+    if metric.get("name") == "tokens_per_sec" and resource_ops is not None:
+        primary_unit_count = _num(get_nested(resource, "result_metrics.total_tokens.sum"))
+        if primary_unit_count is None:
+            avg_tokens = _num(get_nested(resource, "result_metrics.total_tokens.avg"))
+            primary_unit_count = resource_ops * avg_tokens if avg_tokens is not None else None
+        primary_count_unit = "token"
+    elif metric.get("name") == "audio_realtime_factor_inverse" and resource_ops is not None:
+        primary_unit_count = _num(get_nested(resource, "result_metrics.duration_sec.sum"))
+        if primary_unit_count is None:
+            avg_audio_duration = _num(get_nested(resource, "result_metrics.duration_sec.avg"))
+            primary_unit_count = (
+                resource_ops * avg_audio_duration if avg_audio_duration is not None else None
+            )
+        primary_count_unit = "audio_second"
 
     energy_per_primary_unit = None
     if energy_j is not None and primary_unit_count and primary_unit_count > 0:
         energy_per_primary_unit = energy_j / primary_unit_count
 
     throughput_per_watt = None
-    if metric_value is not None and power_w and power_w > 0:
-        throughput_per_watt = metric_value / power_w
+    if resource_rate is not None and power_w is not None and power_w > 0:
+        throughput_per_watt = resource_rate / power_w
 
     hourly_cost = None
     if cm["hardware_price"] is not None and cm["amortization_hours"]:
@@ -150,19 +194,29 @@ def compute_scorecard(result: dict, hardware_config: Optional[dict] = None) -> d
         hourly_cost = (hourly_cost or 0.0) + (power_w / 1000.0) * cm["electricity_per_kwh"]
 
     cost_per_1k_primary = None
-    if hourly_cost is not None and metric_value and metric_value > 0:
-        cost_per_1k_primary = hourly_cost / (metric_value * 3600.0) * 1000.0
+    if hourly_cost is not None and resource_rate is not None and resource_rate > 0:
+        cost_per_1k_primary = hourly_cost / (resource_rate * 3600.0) * 1000.0
 
     warnings = []
     if power_w is None:
         warnings.append("power telemetry unavailable; efficiency/cost energy fields are partial")
     if metric_value is None:
         warnings.append("primary workload metric unavailable")
-    if get_nested(result, "benchmark_results.throughput.error_rate", 0) > 0:
+    if resource_rate is None:
+        warnings.append("resource-phase primary rate unavailable; efficiency fields are partial")
+    throughput_error_rate = _num(get_nested(
+        result, "benchmark_results.throughput.error_rate")) or 0.0
+    if throughput_error_rate > 0:
         warnings.append("throughput includes failed attempts; inspect quality fields")
+    if resource.get("ram_scope") == "legacy_unspecified":
+        warnings.append("legacy RAM metric has no workload or host scope")
+    if energy_coverage is not None and energy_coverage < 0.9:
+        warnings.append("energy telemetry covered less than 90% of the resource phase")
+    if energy_derived:
+        warnings.append("energy estimated from average power and resource measurement duration")
 
     return {
-        "schema_version": "scorecard-2026.05-v1",
+        "schema_version": "scorecard-2026.07-v2",
         "front": front,
         "mode": _mode(result),
         "primary_metric": metric,
@@ -170,10 +224,14 @@ def compute_scorecard(result: dict, hardware_config: Optional[dict] = None) -> d
         "efficiency": {
             "avg_power_w": round(power_w, 3) if power_w is not None else None,
             "energy_j": round(energy_j, 3) if energy_j is not None else None,
-            "energy_per_op_j": round(energy_per_primary, 6) if energy_per_primary is not None else None,
+            "energy_source": "derived" if energy_derived else resource.get("energy_source"),
+            "energy_coverage_ratio": energy_coverage,
+            "energy_per_op_j": round(energy_per_op, 6) if energy_per_op is not None else None,
             "primary_unit_count": round(primary_unit_count, 3) if primary_unit_count is not None else None,
+            "primary_count_unit": primary_count_unit,
             "energy_per_primary_unit_j": round(energy_per_primary_unit, 6) if energy_per_primary_unit is not None else None,
             "primary_metric_per_watt": round(throughput_per_watt, 6) if throughput_per_watt is not None else None,
+            "resource_primary_rate": round(resource_rate, 6) if resource_rate is not None else None,
         },
         "cost": {
             "currency": cm["currency"],
@@ -186,6 +244,17 @@ def compute_scorecard(result: dict, hardware_config: Optional[dict] = None) -> d
             "same_profile_required": True,
             "same_dataset_required": True,
             "architecture_agnostic": True,
+        },
+        "measurement_basis": {
+            "performance": "throughput_phase",
+            "energy_and_efficiency": "resource_usage_phase",
+            "resource_duration_sec": resource_duration,
+            "resource_operation_count": resource_ops,
+            "ram_scope": resource.get("ram_scope"),
+            "gpu_scope": resource.get("gpu_scope"),
+            "vram_scope": resource.get("vram_scope"),
+            "power_scope": resource.get("power_scope"),
+            "energy_coverage_ratio": energy_coverage,
         },
         "warnings": warnings,
     }

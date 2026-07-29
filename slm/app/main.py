@@ -1,44 +1,45 @@
-"""
-main.py — API FastAPI para o container SLM.
+"""API do serviço de modelos de linguagem compactos."""
 
-Endpoints:
-    GET  /health              → status
-    GET  /info                → modelo atual + hardware
-    POST /predict             → geração de texto
-    POST /switch-model        → troca o modelo sem reiniciar container
-    POST /benchmark           → suite de benchmarks
-    GET  /benchmark/last      → último resultado
-"""
-
-import os, sys, json, datetime
+import sys
+import threading
 from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 
 sys.path.insert(0, "/app")
 
-import yaml
-from shared.capabilities import CapabilityDetector
 import asyncio
-from functools import partial
-from shared.benchmark_suite import run_full_benchmark
+from functools import partial, wraps
+
+import yaml
+
 from app.inference import (
-    load_model, generate, get_benchmark_fn,
-    get_device, get_model_name, get_loaded_config
+    generate,
+    get_benchmark_fn,
+    get_device,
+    get_loaded_config,
+    get_model_name,
+    load_model,
 )
+from shared.benchmark_suite import run_full_benchmark
+from shared.capabilities import CapabilityDetector
+from shared.metrics_collector import runtime_execution_info
+from shared.result_writer import save_result
 
 
 class PredictRequest(BaseModel):
-    prompt: str
-    max_tokens: int = 150
+    prompt: str = Field(min_length=1, max_length=100_000)
+    max_tokens: int = Field(default=150, ge=1, le=4096)
 
 
 class BenchmarkRequest(BaseModel):
-    profile: str = "quick"
+    profile: str = Field(default="quick", min_length=1, max_length=64)
 
 
 class SwitchModelRequest(BaseModel):
-    model: str   # chave do models.yaml, ex: "qwen25-0.5b-q4"
+    model: str = Field(min_length=1, max_length=128)
 
 
 _capabilities = {}
@@ -46,6 +47,19 @@ _models_config = {}
 _benchmark_config = {}
 _datasets_config = {}
 _last_benchmark_result = None
+_benchmark_lock = threading.Lock()
+
+
+def _single_benchmark(function):
+    @wraps(function)
+    async def wrapped(*args, **kwargs):
+        if not _benchmark_lock.acquire(blocking=False):
+            raise HTTPException(status_code=409, detail="Já existe um benchmark SLM em execução")
+        try:
+            return await function(*args, **kwargs)
+        finally:
+            _benchmark_lock.release()
+    return wrapped
 
 
 def _reload_runtime_config():
@@ -75,7 +89,6 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[slm] Erro ao ler config: {e}")
 
-    # Carrega modelo default
     try:
         slm_cfg = _models_config.get("slm", {})
         default = slm_cfg.get("default", "tinyllama-1.1b-q4")
@@ -95,13 +108,15 @@ app = FastAPI(title="PDC SLM", version="1.0.0", lifespan=lifespan)
 @app.get("/health")
 async def health():
     model = get_model_name()
-    return {
-        "status": "ok" if model != "não carregado" else "degraded",
+    is_ok = model != "não carregado"
+    payload = {
+        "status": "ok" if is_ok else "degraded",
         "front": "slm",
         "model": model,
         "device": get_device(),
         "gpu": get_device() == "cuda",
     }
+    return payload if is_ok else JSONResponse(payload, status_code=503)
 
 
 @app.get("/info")
@@ -119,26 +134,24 @@ async def info():
 
 @app.post("/predict")
 async def predict(request: PredictRequest):
-    """Gera texto. Retorna também qual modelo foi usado."""
+    """Gera texto com o modelo ativo."""
+    if _benchmark_lock.locked():
+        raise HTTPException(status_code=409, detail="Inferência indisponível durante o benchmark")
     try:
-        return generate(request.prompt, max_tokens=request.max_tokens)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            partial(generate, request.prompt, max_tokens=request.max_tokens),
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/switch-model")
 async def switch_model(request: SwitchModelRequest):
-    """
-    Troca o modelo carregado sem reiniciar o container.
-
-    Baixa o modelo se necessário, descarrega o anterior e carrega o novo.
-
-    Args:
-        model: Nome do modelo (chave em config/models.yaml > slm > models)
-
-    Retorna:
-        Info do modelo carregado após a troca.
-    """
+    """Baixa, quando necessário, e ativa o modelo solicitado."""
+    if _benchmark_lock.locked():
+        raise HTTPException(status_code=409, detail="Não é possível trocar o modelo durante o benchmark")
     try:
         _reload_runtime_config()
     except Exception as e:
@@ -156,7 +169,11 @@ async def switch_model(request: SwitchModelRequest):
 
     try:
         dataset_cfg = _datasets_config.get("slm", {}).get("datasets", {}).get("prompts_pt_20", {})
-        load_model(model_cfg, dataset_config=dataset_cfg)
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None,
+            partial(load_model, model_cfg, dataset_config=dataset_cfg),
+        )
         return {
             "status": "ok",
             "loaded": get_loaded_config(),
@@ -166,6 +183,7 @@ async def switch_model(request: SwitchModelRequest):
 
 
 @app.post("/benchmark")
+@_single_benchmark
 async def benchmark(request: BenchmarkRequest):
     """Executa benchmark com o modelo atualmente carregado."""
     global _last_benchmark_result
@@ -176,13 +194,14 @@ async def benchmark(request: BenchmarkRequest):
         raise HTTPException(status_code=500, detail=f"Falha ao recarregar config: {e}")
 
     profiles = _benchmark_config.get("profiles", {})
-    profile = profiles.get(request.profile, profiles.get("quick", {}))
+    profile = profiles.get(request.profile)
     if not profile:
         raise HTTPException(status_code=400, detail=f"Perfil '{request.profile}' não encontrado")
 
     try:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         fn = get_benchmark_fn()
+        benchmark_model = get_model_name()
         dataset_name = _datasets_config.get("slm", {}).get("default", "prompts_pt_20")
         result = await loop.run_in_executor(
             None,
@@ -193,19 +212,26 @@ async def benchmark(request: BenchmarkRequest):
                 _capabilities,
                 profile_name=request.profile,
                 front="slm",
-                model=get_model_name(),
+                model=benchmark_model,
                 dataset=dataset_name,
+                execution={
+                    **runtime_execution_info(),
+                    "device": get_device(),
+                    "backend": "llama-cpp-python",
+                    "gpu_layers": get_loaded_config().get("gpu_layers"),
+                },
             ),
         )
         result["profile"] = request.profile
         result["front"] = "slm"
-        result["model"] = get_model_name()
+        result["model"] = benchmark_model
 
-        os.makedirs("/app/results", exist_ok=True)
-        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        model_slug = get_model_name().replace(".gguf", "").replace(" ", "_")[:30]
-        with open(f"/app/results/slm_{model_slug}_{request.profile}_{ts}.json", "w") as f:
-            json.dump(result, f, indent=2)
+        model_slug = benchmark_model.replace(".gguf", "").replace(" ", "_")[:30]
+        save_result(
+            "/app/results",
+            f"slm_{model_slug}_{request.profile}",
+            result,
+        )
 
         _last_benchmark_result = result
         return result

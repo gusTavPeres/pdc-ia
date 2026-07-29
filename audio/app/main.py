@@ -1,74 +1,77 @@
-"""
-main.py — API FastAPI para o container de Áudio (ASR + TTS).
+"""API dos serviços de ASR e TTS."""
 
-Endpoints:
-    GET  /health         → status do container
-    GET  /info           → informações detalhadas
-    POST /asr            → transcrição de áudio para texto
-    POST /tts            → síntese de texto para áudio WAV
-    POST /benchmark      → benchmark (modo: asr, tts ou pipeline)
-    GET  /benchmark/last → último resultado
-"""
-
-import io
-import os
 import sys
-import json
+import threading
 import time
-import datetime
-import difflib
 from contextlib import asynccontextmanager
-from typing import List
+from typing import Literal
 
-from fastapi import FastAPI, File, UploadFile, HTTPException
-from fastapi.responses import Response, JSONResponse
-from pydantic import BaseModel
+from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.responses import JSONResponse, Response
+from pydantic import BaseModel, Field
 
 sys.path.insert(0, "/app")
 
-import yaml
-from shared.capabilities import CapabilityDetector
 import asyncio
-from functools import partial
-from shared.benchmark_suite import run_full_benchmark
+from functools import partial, wraps
+
+import yaml
+
 from app.inference_asr import (
-    load_asr,
-    transcribe,
     get_asr_device,
     get_asr_model_name,
     is_asr_loaded,
+    load_asr,
+    transcribe,
 )
 from app.inference_tts import (
-    load_tts,
-    synthesize,
     get_tts_model_name,
     is_tts_loaded,
+    load_tts,
+    synthesize,
+    synthesize_with_metrics,
 )
+from shared.audio_metrics import word_error_rate
+from shared.benchmark_suite import run_full_benchmark
+from shared.capabilities import CapabilityDetector
+from shared.methodology import result_quality, summarize_errors
+from shared.metrics_collector import runtime_execution_info
+from shared.result_writer import save_result
+from shared.scorecard import compute_scorecard, load_hardware_config
 
-
-# ─── Modelos de request ───
 
 class TTSRequest(BaseModel):
-    text: str
+    text: str = Field(min_length=1, max_length=5_000)
 
 
 class BenchmarkRequest(BaseModel):
-    profile: str = "quick"
-    mode: str = "pipeline"  # "asr", "tts", or "pipeline"
+    profile: str = Field(default="quick", min_length=1, max_length=64)
+    mode: Literal["asr", "tts", "pipeline"] = "pipeline"
 
 
 class SwitchModelRequest(BaseModel):
-    target: str  # "asr" or "tts"
-    model: str
+    target: Literal["asr", "tts"]
+    model: str = Field(min_length=1, max_length=128)
 
-
-# ─── Variáveis globais ───
 
 _capabilities = {}
 _models_config = {}
 _benchmark_config = {}
 _datasets_config = {}
 _last_benchmark_result = None
+_benchmark_lock = threading.Lock()
+
+
+def _single_benchmark(function):
+    @wraps(function)
+    async def wrapped(*args, **kwargs):
+        if not _benchmark_lock.acquire(blocking=False):
+            raise HTTPException(status_code=409, detail="Já existe um benchmark de áudio em execução")
+        try:
+            return await function(*args, **kwargs)
+        finally:
+            _benchmark_lock.release()
+    return wrapped
 
 
 def _reload_runtime_config():
@@ -81,8 +84,6 @@ def _reload_runtime_config():
     with open("/app/config/datasets.yaml") as f:
         _datasets_config = yaml.safe_load(f) or {}
 
-
-# ─── Startup ───
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -102,7 +103,6 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[audio] Aviso: erro ao ler config: {e}")
 
-    # ASR (Whisper)
     try:
         asr_config = _models_config.get("audio", {}).get("asr", {})
         default_asr = asr_config.get("default", "whisper-small")
@@ -112,7 +112,6 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[audio] ERRO ao carregar ASR: {e}")
 
-    # TTS (Piper)
     try:
         tts_config = _models_config.get("audio", {}).get("tts", {})
         default_tts = tts_config.get("default", "piper-pt-br")
@@ -136,19 +135,20 @@ app = FastAPI(
 )
 
 
-# ─── Endpoints ───
-
 @app.get("/health")
 async def health():
     asr_ok = is_asr_loaded()
-    return {
-        "status": "ok" if asr_ok else "degraded",
+    tts_ok = is_tts_loaded()
+    is_ok = asr_ok and tts_ok
+    payload = {
+        "status": "ok" if is_ok else "degraded",
         "front": "audio",
         "asr": get_asr_model_name() if asr_ok else "não carregado",
-        "tts": get_tts_model_name() if is_tts_loaded() else "fallback",
+        "tts": get_tts_model_name() if tts_ok else "não carregado",
         "device": get_asr_device(),
         "gpu": get_asr_device() == "cuda",
     }
+    return payload if is_ok else JSONResponse(payload, status_code=503)
 
 
 @app.get("/info")
@@ -175,6 +175,8 @@ async def info():
 
 @app.post("/switch-model")
 async def switch_model(request: SwitchModelRequest):
+    if _benchmark_lock.locked():
+        raise HTTPException(status_code=409, detail="Não é possível trocar o modelo durante o benchmark")
     try:
         _reload_runtime_config()
     except Exception as e:
@@ -191,7 +193,8 @@ async def switch_model(request: SwitchModelRequest):
                 detail=f"Modelo ASR '{request.model}' não encontrado. Disponíveis: {available}"
             )
         try:
-            load_asr(model_cfg)
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, load_asr, model_cfg)
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
     elif request.target == "tts":
@@ -204,7 +207,8 @@ async def switch_model(request: SwitchModelRequest):
                 detail=f"Modelo TTS '{request.model}' não encontrado. Disponíveis: {available}"
             )
         try:
-            load_tts(model_cfg)
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, load_tts, model_cfg)
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
     else:
@@ -223,18 +227,30 @@ async def switch_model(request: SwitchModelRequest):
 
 @app.post("/asr")
 async def asr_endpoint(file: UploadFile = File(...)):
+    if _benchmark_lock.locked():
+        raise HTTPException(status_code=409, detail="Inferência indisponível durante o benchmark")
     try:
         audio_bytes = await file.read()
-        result = transcribe(audio_bytes)
+        if not audio_bytes:
+            raise ValueError("Áudio vazio")
+        if len(audio_bytes) > 100 * 1024 * 1024:
+            raise ValueError("Áudio excede 100 MB")
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(None, transcribe, audio_bytes)
         return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/tts")
 async def tts_endpoint(request: TTSRequest):
+    if _benchmark_lock.locked():
+        raise HTTPException(status_code=409, detail="Inferência indisponível durante o benchmark")
     try:
-        wav_bytes = synthesize(request.text)
+        loop = asyncio.get_running_loop()
+        wav_bytes = await loop.run_in_executor(None, synthesize, request.text)
         return Response(
             content=wav_bytes,
             media_type="audio/wav",
@@ -244,29 +260,10 @@ async def tts_endpoint(request: TTSRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-def _calculate_wer(reference: str, hypothesis: str) -> float:
-    ref_words = reference.lower().split()
-    hyp_words = hypothesis.lower().split()
-
-    if len(ref_words) == 0:
-        return 0.0
-
-    matcher = difflib.SequenceMatcher(None, ref_words, hyp_words)
-    matches = sum(block.size for block in matcher.get_matching_blocks())
-
-    errors = len(ref_words) - matches
-    wer = errors / len(ref_words)
-    return round(max(0.0, wer), 4)
-
-
 @app.post("/benchmark")
+@_single_benchmark
 async def benchmark_endpoint(request: BenchmarkRequest):
-    """
-    Benchmark de audio com 3 modos:
-      - asr: mede so o Whisper (transcrição)
-      - tts: mede so o Piper (sintese de voz)
-      - pipeline: TTS+ASR junto com calculo de WER
-    """
+    """Executa ASR, TTS ou o pipeline completo, conforme o modo solicitado."""
     global _last_benchmark_result
 
     mode = request.mode
@@ -277,7 +274,9 @@ async def benchmark_endpoint(request: BenchmarkRequest):
         raise HTTPException(status_code=500, detail=f"Falha ao recarregar config: {e}")
 
     profiles = _benchmark_config.get("profiles", {})
-    profile = profiles.get(request.profile, profiles.get("quick", {}))
+    profile = profiles.get(request.profile)
+    if not profile:
+        raise HTTPException(status_code=400, detail=f"Perfil '{request.profile}' não encontrado")
 
     phrases = (
         _datasets_config
@@ -288,33 +287,45 @@ async def benchmark_endpoint(request: BenchmarkRequest):
         .get("phrases", ["Teste de reconhecimento de voz."])
     )
 
-    # Pipeline WER test (asr e pipeline modes)
     pipeline_results = {}
     if mode in ("pipeline", "asr"):
         wer_results = []
         rtf_list = []
         latency_list = []
+        pipeline_errors = []
+        pipeline_error_count = 0
         for phrase in phrases:
             try:
+                pipeline_started = time.perf_counter()
                 wav_bytes = synthesize(phrase)
                 t0 = time.perf_counter()
                 result = transcribe(wav_bytes)
-                latency_ms = (time.perf_counter() - t0) * 1000
-                wer = _calculate_wer(phrase, result.get("text", ""))
+                if not result.get("text"):
+                    raise RuntimeError("ASR retornou transcrição vazia")
+                asr_elapsed = time.perf_counter() - t0
+                pipeline_elapsed = time.perf_counter() - pipeline_started
+                measured_elapsed = pipeline_elapsed if mode == "pipeline" else asr_elapsed
+                latency_ms = measured_elapsed * 1000
+                wer = word_error_rate(phrase, result.get("text", ""))
                 wer_results.append(wer)
-                if result.get("rtf"):
-                    rtf_list.append(result["rtf"])
+                audio_duration = result.get("duration_sec")
+                if audio_duration and audio_duration > 0:
+                    rtf_list.append(measured_elapsed / audio_duration)
                 latency_list.append(latency_ms)
             except Exception as e:
-                print(f"[audio] Erro no pipeline para '{phrase}': {e}")
+                pipeline_error_count += 1
+                if len(pipeline_errors) < 20:
+                    pipeline_errors.append(f"{type(e).__name__}: {e}")
         pipeline_results = {
+            "phrases_requested": len(phrases),
             "phrases_tested": len(wer_results),
             "avg_wer": round(sum(wer_results) / len(wer_results), 4) if wer_results else None,
             "avg_rtf": round(sum(rtf_list) / len(rtf_list), 4) if rtf_list else None,
             "avg_latency_ms": round(sum(latency_list) / len(latency_list), 2) if latency_list else None,
+            "quality": result_quality(len(wer_results), pipeline_error_count),
+            "errors": summarize_errors(pipeline_errors, total_count=pipeline_error_count),
         }
 
-    # Benchmark function depends on mode
     if mode == "tts":
         test_phrases = [
             "Teste de síntese de voz.",
@@ -326,40 +337,60 @@ async def benchmark_endpoint(request: BenchmarkRequest):
         def bench_fn():
             p = test_phrases[_phrase_idx[0] % len(test_phrases)]
             _phrase_idx[0] += 1
-            return synthesize(p)
+            return synthesize_with_metrics(p)
 
     elif mode == "asr":
         _pregen_wav = synthesize("Teste de inferência de reconhecimento de voz com whisper.")
 
         def bench_fn():
-            return transcribe(_pregen_wav)
+            result = transcribe(_pregen_wav)
+            if not result.get("text"):
+                raise RuntimeError("ASR retornou transcrição vazia")
+            return result
 
     else:  # pipeline
         def bench_fn():
+            started = time.perf_counter()
             wav = synthesize("Teste de benchmark do pipeline completo.")
-            return transcribe(wav)
+            result = transcribe(wav)
+            if not result.get("text"):
+                raise RuntimeError("ASR retornou transcrição vazia")
+            pipeline_elapsed = time.perf_counter() - started
+            audio_duration = result.get("duration_sec")
+            output = dict(result)
+            output["asr_processing_sec"] = result.get("processing_sec")
+            output["processing_sec"] = round(pipeline_elapsed, 4)
+            output["pipeline_rtf"] = round(pipeline_elapsed / audio_duration, 4) \
+                if audio_duration and audio_duration > 0 else None
+            return output
 
-    try:
-        loop = asyncio.get_event_loop()
-        bench_result = await loop.run_in_executor(
-            None,
-            partial(
-                run_full_benchmark,
-                bench_fn,
-                profile,
-                _capabilities,
-                profile_name=request.profile,
-                front="audio",
-                model={"asr": get_asr_model_name(), "tts": get_tts_model_name()},
-                mode=mode,
-                dataset=_datasets_config.get("audio", {}).get("asr", {}).get("default", "self_generated"),
-            ),
-        )
-    except Exception as e:
-        bench_result = {"error": str(e)}
+    loop = asyncio.get_running_loop()
+    bench_result = await loop.run_in_executor(
+        None,
+        partial(
+            run_full_benchmark,
+            bench_fn,
+            profile,
+            _capabilities,
+            profile_name=request.profile,
+            front="audio",
+            model={"asr": get_asr_model_name(), "tts": get_tts_model_name()},
+            mode=mode,
+            dataset=_datasets_config.get("audio", {}).get("asr", {}).get(
+                "default", "self_generated"),
+            execution={
+                **runtime_execution_info(),
+                "asr_device": get_asr_device(),
+                "tts_device": "cpu",
+                "backend": "faster-whisper+piper",
+            },
+        ),
+    )
 
     result = {
-        "timestamp": datetime.datetime.now().isoformat(),
+        "schema_version": bench_result.get("schema_version"),
+        "run_id": bench_result.get("run_id"),
+        "timestamp": bench_result.get("timestamp"),
         "profile": request.profile,
         "mode": mode,
         "front": "audio",
@@ -372,13 +403,11 @@ async def benchmark_endpoint(request: BenchmarkRequest):
         "methodology": bench_result.get("methodology", {}),
         "metadata": bench_result.get("metadata", {}),
         "scorecard": bench_result.get("scorecard", {}),
-        "system_info": _capabilities,
+        "system_info": bench_result.get("system_info", _capabilities),
     }
+    result["scorecard"] = compute_scorecard(result, load_hardware_config())
 
-    os.makedirs("/app/results", exist_ok=True)
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    with open(f"/app/results/audio_{mode}_{request.profile}_{timestamp}.json", "w") as f:
-        json.dump(result, f, indent=2)
+    save_result("/app/results", f"audio_{mode}_{request.profile}", result)
 
     _last_benchmark_result = result
     return result

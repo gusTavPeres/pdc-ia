@@ -1,0 +1,12 @@
+vision:
+  cpu_limit: 0
+  memory_limit_mb: 0
+  pids_limit: 0
+slm:
+  cpu_limit: 0
+  memory_limit_mb: 0
+  pids_limit: 0
+audio:
+  cpu_limit: 0
+  memory_limit_mb: 0
+  pids_limit: 0

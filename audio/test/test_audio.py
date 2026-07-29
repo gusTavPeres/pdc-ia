@@ -1,27 +1,16 @@
 """Teste de integração do container de áudio."""
 
-import sys
-import time
+import os
+
+import pytest
 import requests
 
+pytestmark = pytest.mark.skipif(
+    os.environ.get("PDC_RUN_INTEGRATION") != "1",
+    reason="defina PDC_RUN_INTEGRATION=1 para testar containers ativos",
+)
+
 BASE_URL = "http://localhost:8012"
-
-
-def wait_for_health(max_wait=400):
-    print(f"Aguardando Audio ficar saudável (máx {max_wait}s)...")
-    for i in range(max_wait // 10):
-        try:
-            r = requests.get(f"{BASE_URL}/health", timeout=5)
-            if r.status_code == 200 and r.json().get("status") == "ok":
-                print(f"Container saudável após ~{i*10}s")
-                return True
-        except Exception:
-            pass
-        time.sleep(10)
-        if i % 6 == 0:
-            print(f"  {i*10}s decorridos...")
-    return False
-
 
 def test_health():
     r = requests.get(f"{BASE_URL}/health", timeout=10)
@@ -44,10 +33,9 @@ def test_tts():
     request_tts_audio()
 
 
-def test_asr(wav_bytes=None):
+def test_asr():
     """Testa transcrição de áudio."""
-    if wav_bytes is None:
-        wav_bytes = request_tts_audio()
+    wav_bytes = request_tts_audio()
 
     files = {"file": ("audio.wav", wav_bytes, "audio/wav")}
     r = requests.post(f"{BASE_URL}/asr", files=files, timeout=60)
@@ -55,46 +43,3 @@ def test_asr(wav_bytes=None):
     data = r.json()
     assert "text" in data, "Sem campo 'text'"
     print(f"  ASR OK: texto='{data['text'][:80]}', rtf={data.get('rtf')}")
-
-
-if __name__ == "__main__":
-    print("=== Teste Audio Container ===")
-
-    if not wait_for_health():
-        print("FALHA: Container não ficou saudável")
-        sys.exit(1)
-
-    passed = failed = 0
-    wav_bytes = None
-
-    for fn in [test_health]:
-        try:
-            print(f"\nTestando {fn.__name__}...")
-            fn()
-            print("  PASSOU")
-            passed += 1
-        except Exception as e:
-            print(f"  FALHOU: {e}")
-            failed += 1
-
-    # TTS primeiro para ter áudio para o ASR
-    try:
-        print("\nTestando test_tts...")
-        wav_bytes = request_tts_audio()
-        print("  PASSOU")
-        passed += 1
-    except Exception as e:
-        print(f"  FALHOU: {e}")
-        failed += 1
-
-    try:
-        print("\nTestando test_asr...")
-        test_asr(wav_bytes)
-        print("  PASSOU")
-        passed += 1
-    except Exception as e:
-        print(f"  FALHOU: {e}")
-        failed += 1
-
-    print(f"\nResultado: {passed} passou, {failed} falhou")
-    sys.exit(0 if failed == 0 else 1)
