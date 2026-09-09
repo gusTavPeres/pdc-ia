@@ -8,6 +8,8 @@ import threading
 import time
 from typing import Dict, List, Optional, Tuple
 
+from shared.device_telemetry import load_host_telemetry
+
 try:
     import psutil
     _PSUTIL = True
@@ -407,6 +409,8 @@ class MetricsCollector:
         self._rapl = self._discover_rapl()
         self._rapl_last_time = None
         self._rapl_observed_duration = 0.0
+        self._host_telemetry_path = os.environ.get(
+            "PDC_HOST_TELEMETRY_PATH", "/app/data/telemetry/host.json")
 
     def start(self):
         if self._thread is not None and self._thread.is_alive():
@@ -502,36 +506,71 @@ class MetricsCollector:
         )
         gpu_mem_scope = _gpu_metric_scope(data, "gpu_mem_mb", "gpu_mem_scope")
         gpu_util_scope = _gpu_metric_scope(data, "gpu_pct", "gpu_util_scope")
+        accelerator_util_scope = _gpu_metric_scope(
+            data, "accelerator_pct", "accelerator_util_scope")
+        accelerator_memory_scope = _gpu_metric_scope(
+            data, "accelerator_memory_mb", "accelerator_memory_scope")
 
         gpu_energy, gpu_energy_duration = _integrate_metric(data, "gpu_power_w")
+        accelerator_energy, accelerator_energy_duration = _integrate_metric(
+            data, "accelerator_power_w")
+        platform_energy, platform_energy_duration = _integrate_metric(
+            data, "platform_power_w")
         rapl_energy_values = values("cpu_package_energy_j")
         cpu_energy = max(rapl_energy_values) if rapl_energy_values else None
         rapl_duration_values = values("cpu_package_energy_duration_sec")
         cpu_energy_duration = max(rapl_duration_values) if rapl_duration_values else 0.0
-        energy_parts = [value for value in (gpu_energy, cpu_energy) if value is not None]
-        total_energy = sum(energy_parts) if energy_parts else None
-        average_power_parts = []
-        if gpu_energy is not None and gpu_energy_duration > 0:
-            average_power_parts.append(gpu_energy / gpu_energy_duration)
-        if cpu_energy is not None and cpu_energy_duration > 0:
-            average_power_parts.append(cpu_energy / cpu_energy_duration)
-        avg_power = sum(average_power_parts) if average_power_parts else None
+        platform_power_sources = sorted({
+            str(sample.get("platform_power_source")) for sample in data
+            if sample.get("platform_power_source")
+        })
+        gpu_power_sources = set()
+        for sample in data:
+            for item in sample.get("gpus", []):
+                if not isinstance(item, dict) or _finite_number(item.get("power_w")) is None:
+                    continue
+                source = item.get("source")
+                gpu_power_sources.add(f"host_gpu:{source}" if source else "nvml_gpu")
+        if platform_energy is not None:
+            total_energy = platform_energy
+            avg_power = platform_energy / platform_energy_duration \
+                if platform_energy_duration > 0 else None
+            power_sources = platform_power_sources or ["host_board_power"]
+            observed_durations = [platform_energy_duration]
+            power_scope = "host_board"
+        else:
+            energy_parts = [value for value in (
+                gpu_energy, cpu_energy, accelerator_energy) if value is not None]
+            total_energy = sum(energy_parts) if energy_parts else None
+            average_power_parts = []
+            if gpu_energy is not None and gpu_energy_duration > 0:
+                average_power_parts.append(gpu_energy / gpu_energy_duration)
+            if cpu_energy is not None and cpu_energy_duration > 0:
+                average_power_parts.append(cpu_energy / cpu_energy_duration)
+            if accelerator_energy is not None and accelerator_energy_duration > 0:
+                average_power_parts.append(accelerator_energy / accelerator_energy_duration)
+            avg_power = sum(average_power_parts) if average_power_parts else None
+            power_sources = []
+            if gpu_energy is not None:
+                power_sources.extend(sorted(gpu_power_sources) or ["gpu_device"])
+            if cpu_energy is not None:
+                power_sources.append("rapl_cpu_package")
+            if accelerator_energy is not None:
+                power_sources.append("accelerator_device")
+            observed_durations = []
+            if gpu_energy is not None:
+                observed_durations.append(gpu_energy_duration)
+            if cpu_energy is not None:
+                observed_durations.append(cpu_energy_duration)
+            if accelerator_energy is not None:
+                observed_durations.append(accelerator_energy_duration)
+            power_scope = "device_components" if total_energy is not None else "unavailable"
 
         first = data[0]
         peak_ram = peak("ram_mb")
         peak_gpu_mem = peak("gpu_mem_mb")
         baseline_ram = _finite_number(first.get("ram_mb"))
         baseline_gpu_mem = _finite_number(first.get("gpu_mem_mb"))
-        power_sources = []
-        if gpu_energy is not None:
-            power_sources.append("nvml_gpu")
-        if cpu_energy is not None:
-            power_sources.append("rapl_cpu_package")
-        observed_durations = []
-        if gpu_energy is not None:
-            observed_durations.append(gpu_energy_duration)
-        if cpu_energy is not None:
-            observed_durations.append(cpu_energy_duration)
         energy_observed_duration = min(observed_durations) if observed_durations else 0.0
         energy_coverage = (
             min(1.0, energy_observed_duration / duration)
@@ -546,8 +585,9 @@ class MetricsCollector:
                 "cpu_pct": canonical_cpu_scope,
                 "gpu_pct": gpu_util_scope,
                 "gpu_mem_mb": gpu_mem_scope,
-                "power_w": "device_components"
-                if total_energy is not None or avg_power is not None else "unavailable",
+                "accelerator_pct": accelerator_util_scope,
+                "accelerator_memory_mb": accelerator_memory_scope,
+                "power_w": power_scope,
             },
             "peak_ram_mb": rounded(peak_ram, 1),
             "peak_container_ram_mb": rounded(peak("container_ram_mb"), 1),
@@ -577,6 +617,13 @@ class MetricsCollector:
             "avg_gpu_pct": rounded(_time_weighted_average(data, "gpu_pct"), 1),
             "peak_process_gpu_util": rounded(peak("gpu_process_pct"), 1),
             "peak_device_gpu_util": rounded(peak("gpu_device_pct"), 1),
+            "peak_accelerator_util": rounded(peak("accelerator_pct"), 1),
+            "avg_accelerator_pct": rounded(
+                _time_weighted_average(data, "accelerator_pct"), 1),
+            "peak_accelerator_memory_mb": rounded(peak("accelerator_memory_mb"), 1),
+            "peak_accelerator_temp_c": rounded(peak("accelerator_temp_c"), 1),
+            "thermal_throttling_observed": any(
+                sample.get("thermal_throttling") is True for sample in data),
             "peak_vram_mb": rounded(peak_gpu_mem, 1),
             "peak_gpu_mem_mb": rounded(peak_gpu_mem, 1),
             "peak_process_vram_mb": rounded(peak("gpu_process_mem_mb"), 1),
@@ -592,11 +639,20 @@ class MetricsCollector:
             "peak_cpu_temp_c": rounded(peak("cpu_temp_c"), 1),
             "avg_power_w": rounded(avg_power, 3),
             "avg_gpu_power_w": rounded(_time_weighted_average(data, "gpu_power_w"), 3),
+            "avg_accelerator_power_w": rounded(
+                _time_weighted_average(data, "accelerator_power_w"), 3),
+            "avg_platform_power_w": rounded(
+                _time_weighted_average(data, "platform_power_w"), 3),
             "peak_power_w": rounded(peak("power_w"), 3),
             "total_energy_j": rounded(total_energy, 3),
             "gpu_energy_j": rounded(gpu_energy, 3),
+            "accelerator_energy_j": rounded(accelerator_energy, 3),
+            "platform_energy_j": rounded(platform_energy, 3),
             "cpu_package_energy_j": rounded(cpu_energy, 3),
             "gpu_energy_observed_duration_sec": rounded(gpu_energy_duration, 3),
+            "accelerator_energy_observed_duration_sec": rounded(
+                accelerator_energy_duration, 3),
+            "platform_energy_observed_duration_sec": rounded(platform_energy_duration, 3),
             "cpu_energy_observed_duration_sec": rounded(cpu_energy_duration, 3),
             "energy_observed_duration_sec": rounded(energy_observed_duration, 3),
             "energy_coverage_ratio": rounded(energy_coverage, 4),
@@ -607,9 +663,23 @@ class MetricsCollector:
             "telemetry": {
                 "cgroup": self._cgroup is not None,
                 "process": _PSUTIL,
-                "nvml": any(sample.get("gpus") for sample in data),
+                "nvml": any(
+                    item.get("source") is None
+                    for sample in data for item in sample.get("gpus", [])
+                    if isinstance(item, dict)
+                ),
                 "rapl": bool(self._rapl),
+                "host_agent": any(sample.get("host_telemetry_sources") for sample in data),
+                "sources": sorted({
+                    str(source) for sample in data
+                    for source in sample.get("host_telemetry_sources", []) if source
+                }),
             },
+            "platform": next(({
+                "family": sample.get("platform_family"),
+                "model": sample.get("platform_model"),
+            } for sample in data if sample.get("platform_family")
+                or sample.get("platform_model")), {}),
         }
 
     def _collect_loop(self):
@@ -693,14 +763,35 @@ class MetricsCollector:
         container_cpu = cgroup_cpu if self._containerized else None
         cpu = container_cpu if container_cpu is not None else process_cpu
 
+        host_device = self._collect_host_device_telemetry()
         gpu = self._collect_gpu(process.get("visible_pids", []))
-        cpu_temp = self._cpu_temperature()
+        host_gpu_fields = (
+            "gpu_pct", "gpu_frequency_mhz", "gpu_temp_c", "gpu_power_w")
+        if (not gpu.get("gpus") and any(
+                host_device.get(key) is not None for key in host_gpu_fields)):
+            gpu = self._host_gpu_snapshot(host_device)
+        cpu_temp_values = [
+            value for value in (
+                self._cpu_temperature(),
+                _finite_number(host_device.get("cpu_temp_c")),
+            ) if value is not None
+        ]
+        cpu_temp = max(cpu_temp_values) if cpu_temp_values else None
         rapl_power, rapl_energy, rapl_duration = self._collect_rapl(now)
         gpu_power = _finite_number(gpu.get("gpu_power_w"))
-        power_parts = [value for value in (gpu_power, rapl_power) if value is not None]
-        power = sum(power_parts) if power_parts else None
+        accelerator_power = _finite_number(host_device.get("accelerator_power_w"))
+        platform_power = _finite_number(host_device.get("platform_power_w"))
+        component_power = [
+            value for value in (gpu_power, rapl_power, accelerator_power)
+            if value is not None
+        ]
+        power = platform_power if platform_power is not None else (
+            sum(component_power) if component_power else None)
         gpu_temp = _finite_number(gpu.get("gpu_temp_c"))
-        temperatures = [value for value in (gpu_temp, cpu_temp) if value is not None]
+        accelerator_temp = _finite_number(host_device.get("accelerator_temp_c"))
+        platform_temp = _finite_number(host_device.get("platform_temp_c"))
+        temperatures = [value for value in (
+            gpu_temp, cpu_temp, accelerator_temp, platform_temp) if value is not None]
 
         return {
             "timestamp": round(now - self._start_time, 4),
@@ -734,12 +825,117 @@ class MetricsCollector:
             "cpu_temp_c": cpu_temp,
             "temp_c": max(temperatures) if temperatures else None,
             "gpu_power_w": gpu_power,
+            "accelerator_pct": host_device.get("accelerator_pct"),
+            "accelerator_util_scope": host_device.get("accelerator_util_scope"),
+            "accelerator_memory_mb": host_device.get("accelerator_memory_mb"),
+            "accelerator_memory_scope": host_device.get("accelerator_memory_scope"),
+            "accelerator_temp_c": accelerator_temp,
+            "accelerator_power_w": accelerator_power,
+            "accelerators": host_device.get("accelerators", []),
+            "platform_power_w": platform_power,
+            "platform_power_source": host_device.get("platform_power_source"),
+            "platform_temp_c": platform_temp,
+            "platform_family": host_device.get("platform_family"),
+            "platform_model": host_device.get("platform_model"),
+            "thermal_throttling": host_device.get("thermal_throttling"),
+            "host_telemetry_sources": host_device.get("sources", []),
             "cpu_package_power_w": round(rapl_power, 3) if rapl_power is not None else None,
             "cpu_package_energy_j": round(rapl_energy, 6) if rapl_energy is not None else None,
             "cpu_package_energy_duration_sec": round(rapl_duration, 6)
             if rapl_duration is not None else None,
             "power_w": round(power, 3) if power is not None else None,
             "gpus": gpu.get("gpus", []),
+        }
+
+    def _collect_host_device_telemetry(self) -> dict:
+        payload = load_host_telemetry(self._host_telemetry_path, max_age_sec=5.0)
+        if not payload:
+            return {}
+        platform_info = payload.get("platform") \
+            if isinstance(payload.get("platform"), dict) else {}
+        power = payload.get("power") if isinstance(payload.get("power"), dict) else {}
+        throttling = payload.get("throttling") \
+            if isinstance(payload.get("throttling"), dict) else {}
+        gpu = payload.get("gpu") if isinstance(payload.get("gpu"), dict) else {}
+        cpu = payload.get("cpu") if isinstance(payload.get("cpu"), dict) else {}
+        temperatures = payload.get("temperatures") \
+            if isinstance(payload.get("temperatures"), list) else []
+        all_accelerators = [
+            item for item in payload.get("accelerators", []) if isinstance(item, dict)
+        ]
+        accelerators = [item for item in all_accelerators if item.get("kind") != "gpu"]
+
+        def numbers(items, key):
+            return [number for item in items
+                    if (number := _finite_number(item.get(key))) is not None]
+
+        accelerator_util = numbers(accelerators, "utilization_pct")
+        accelerator_memory = numbers(accelerators, "memory_used_mb")
+        accelerator_power = numbers(accelerators, "power_w")
+        accelerator_temp = numbers(accelerators, "temperature_c")
+        all_temperatures = [
+            number for item in temperatures if isinstance(item, dict)
+            and (number := _finite_number(item.get("temperature_c"))) is not None
+        ]
+        source_values = payload.get("sources", [])
+        source_values = source_values if isinstance(source_values, list) else []
+        return {
+            "sources": [str(value) for value in source_values if value],
+            "platform_family": platform_info.get("family"),
+            "platform_model": platform_info.get("model"),
+            "thermal_throttling": throttling.get("active")
+            if isinstance(throttling.get("active"), bool) else None,
+            "platform_power_w": _finite_number(power.get("board_w")),
+            "platform_power_source": power.get("board_source"),
+            "platform_temp_c": max(all_temperatures) if all_temperatures else None,
+            "cpu_temp_c": _finite_number(cpu.get("temperature_c")),
+            "gpu_pct": _finite_number(gpu.get("utilization_pct")),
+            "gpu_frequency_mhz": _finite_number(gpu.get("frequency_mhz")),
+            "gpu_temp_c": _finite_number(gpu.get("temperature_c")),
+            "gpu_power_w": _finite_number(gpu.get("power_w")),
+            "gpu_name": gpu.get("name"),
+            "gpu_source": gpu.get("source"),
+            "accelerator_pct": max(accelerator_util) if accelerator_util else None,
+            "accelerator_util_scope": "visible_devices" if accelerator_util else "unavailable",
+            "accelerator_memory_mb": sum(accelerator_memory) if accelerator_memory else None,
+            "accelerator_memory_scope": "visible_devices" if accelerator_memory else "unavailable",
+            "accelerator_power_w": sum(accelerator_power) if accelerator_power else None,
+            "accelerator_temp_c": max(accelerator_temp) if accelerator_temp else None,
+            "accelerators": accelerators,
+        }
+
+    @staticmethod
+    def _host_gpu_snapshot(host_device: dict) -> dict:
+        utilization = _finite_number(host_device.get("gpu_pct"))
+        temperature = _finite_number(host_device.get("gpu_temp_c"))
+        power = _finite_number(host_device.get("gpu_power_w"))
+        item = {
+            "index": 0,
+            "name": host_device.get("gpu_name") or "Integrated GPU",
+            "util_pct": utilization,
+            "process_util_pct": None,
+            "process_util_supported": False,
+            "memory_used_mb": None,
+            "process_memory_mb": None,
+            "process_memory_supported": False,
+            "temperature_c": temperature,
+            "power_w": power,
+            "frequency_mhz": _finite_number(host_device.get("gpu_frequency_mhz")),
+            "source": host_device.get("gpu_source") or "host_telemetry",
+        }
+        return {
+            "gpu_pct": utilization,
+            "gpu_avg_pct": utilization,
+            "gpu_util_scope": "visible_devices" if utilization is not None else "unavailable",
+            "gpu_process_pct": None,
+            "gpu_device_pct": utilization,
+            "gpu_mem_mb": None,
+            "gpu_mem_scope": "unavailable",
+            "gpu_process_mem_mb": None,
+            "gpu_device_mem_mb": None,
+            "gpu_temp_c": temperature,
+            "gpu_power_w": power,
+            "gpus": [item],
         }
 
     def _init_nvml(self):

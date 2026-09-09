@@ -11,6 +11,7 @@ measurement:
   notes:
   - GPU via NVML/nvidia-smi quando disponível.
   - CPU package via RAPL/powercap quando disponível.
+  - Entrada da placa via hwmon ou tegrastats quando disponível.
 score_references:
   vision:
     ops_per_sec: 30.0

@@ -65,6 +65,7 @@ Recursos:
 - CPU do cgroup calculada pela diferença do tempo acumulado de CPU na janela, com fallback para a árvore de processos;
 - utilização de GPU atribuída aos PIDs da carga quando a NVML oferece essa amostragem, com fallback para o dispositivo visível;
 - VRAM atribuída aos processos da carga quando a API do dispositivo fornece essa informação;
+- utilização de NPU, TPU ou VPU por devfreq ou provedor do runtime;
 - temperatura, potência e séries temporais quando disponíveis.
 
 CPU usa 100% por núcleo ocupado e pode ultrapassar 100% em cargas paralelas.
@@ -105,10 +106,14 @@ um valor derivado da configuração da bancada.
 Fontes aceitas:
 
 - GPU NVIDIA via NVML/`nvidia-smi`;
-- CPU via RAPL/powercap quando disponível.
+- CPU via RAPL/powercap quando disponível;
+- entrada da placa e componentes via hwmon;
+- trilhos de potência Jetson via `tegrastats`;
+- aceleradores por provedores externos com amostras atuais.
 
-Medidores externos ainda não possuem entrada na plataforma. Seus valores não
-devem ser inseridos como se fossem telemetria de CPU ou GPU.
+Medidores externos devem usar o contrato de provedor descrito em
+`docs/ARM.md`; seus valores não devem ser inseridos como se fossem telemetria de
+CPU ou GPU.
 
 Quando potência não está disponível, throughput e latência continuam válidos, mas custo e eficiência ficam parciais.
 
@@ -117,6 +122,9 @@ pacotes de CPU acessíveis. Quando as duas fontes existem, a energia total é a
 soma dos componentes medidos, não uma medição completa na tomada. A energia de
 GPU é integrada pela série temporal; contadores RAPL usam a diferença acumulada
 na própria janela.
+
+Quando um sensor mede a entrada da placa, essa fonte prevalece no total. Os
+componentes contidos nessa leitura não são somados novamente.
 
 `energy_coverage_ratio` informa qual parte da janela possui telemetria contínua.
 Intervalos ausentes não são preenchidos. Quando a cobertura é baixa, qualquer

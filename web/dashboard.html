@@ -407,7 +407,7 @@ canvas{max-height:180px}
     </div>
     <div style="font-size:.74rem;color:var(--dim);margin:-4px 0 10px 0">Passe o mouse sobre os títulos das métricas para ver definição e método de cálculo.</div>
     <div style="overflow-x:auto;overflow-y:auto;max-height:60vh">
-      <div style="min-width:1542px">
+      <div style="min-width:1594px">
         <div style="display:flex;padding:0 0 6px 0;border-bottom:1px solid #303030;font-size:.68rem;font-weight:700;color:#737373;text-transform:uppercase;letter-spacing:.05em">
           <div style="flex:0 0 88px">Data/Hora</div>
           <div style="flex:0 0 56px">Front</div>
@@ -423,10 +423,11 @@ canvas{max-height:180px}
           <div style="flex:0 0 62px" class="metric-help" title="Diferença entre o pico de RAM e o baseline coletado antes da fase de uso de recursos.">Δ RAM</div>
           <div style="flex:0 0 62px" class="metric-help" title="Média de CPU na fase de recursos. Cada 100% corresponde a um núcleo ocupado; o valor pode superar 100% em cargas paralelas.">CPU%</div>
           <div style="flex:0 0 52px" class="metric-help" title="Pico de GPU dos processos da carga quando o NVML oferece telemetria por PID; caso contrário, usa o pico dos dispositivos visíveis.">GPU%</div>
+          <div style="flex:0 0 52px" class="metric-help" title="Pico de utilização de NPU, TPU, VPU ou outro acelerador não GPU. Sem atribuição por processo, representa os dispositivos visíveis.">Acel.%</div>
           <div style="flex:0 0 64px" class="metric-help" title="Pico de VRAM dos processos da carga quando a API do dispositivo permite essa atribuição; caso contrário, usa a VRAM total visível.">VRAM</div>
           <div style="flex:0 0 62px" class="metric-help" title="Diferença entre o pico de VRAM e o baseline da fase de uso de recursos, no mesmo escopo da coluna VRAM.">Δ VRAM</div>
           <div style="flex:0 0 52px" class="metric-help" title="Maior temperatura observada durante o teste de uso de recursos, normalmente da GPU quando disponível.">Temp</div>
-          <div style="flex:0 0 62px" class="metric-help" title="Potência média dos componentes com telemetria disponível. GPU via NVML e CPU package via RAPL são somadas quando ambas existem.">Potência</div>
+          <div style="flex:0 0 62px" class="metric-help" title="Potência média. Quando existe sensor de entrada da placa ele prevalece; caso contrário, soma apenas os componentes com telemetria disponível.">Potência</div>
           <div style="flex:0 0 72px" class="metric-help" title="Energia dos componentes medidos na fase de uso de recursos. O valor é integrado no tempo ou lido do contador RAPL.">Energia</div>
           <div style="flex:0 0 58px" class="metric-help" title="Fração da duração da fase coberta pela telemetria de energia. Valores abaixo de 90% geram aviso e estimativa no scorecard.">Cob.</div>
           <div style="flex:0 0 72px" class="metric-help" title="Energia por unidade principal: frame em visão, token em SLM ou segundo de áudio processado.">J/unid.</div>
@@ -492,6 +493,7 @@ canvas{max-height:180px}
       <h2 style="margin:0">Aceleradores e interfaces</h2>
       <button class="btn sm" onclick="loadDetectedHardware(true)">Detectar novamente</button>
     </div>
+    <div id="hw-telemetry" style="margin-bottom:10px"></div>
     <div id="hw-accelerators" class="table-wrap"></div>
   </div>
   <div class="card" style="margin-top:14px">
@@ -878,14 +880,21 @@ async function fetchMetrics() {
     metrics = await r.json();
     const g = metrics.gpu || {};
     const s = metrics.system || {};
+    const t = metrics.telemetry || {};
+    const boardPower = t.power?.board_w;
 
     // Big numbers
     if(!g.error) {
       document.getElementById('m-gpu-util').textContent = (g.util_gpu_pct||0).toFixed(0);
-      document.getElementById('m-vram').textContent = (g.mem_used_mb||0).toFixed(0);
-      document.getElementById('m-vram-detail').textContent = `${(g.mem_used_mb||0).toFixed(0)} / ${(g.mem_total_mb||0).toFixed(0)} MB`;
+      document.getElementById('m-vram').textContent = g.mem_used_mb != null
+        ? g.mem_used_mb.toFixed(0) : '—';
+      document.getElementById('m-vram-detail').textContent = g.mem_used_mb != null && g.mem_total_mb != null
+        ? `${g.mem_used_mb.toFixed(0)} / ${g.mem_total_mb.toFixed(0)} MB`
+        : 'Memória compartilhada ou indisponível';
       document.getElementById('m-gpu-temp').textContent = (g.temp_c||0).toFixed(0);
-      document.getElementById('m-power').textContent = g.power_w != null ? g.power_w.toFixed(1) : '—';
+      document.getElementById('m-power').textContent = boardPower != null
+        ? Number(boardPower).toFixed(1)
+        : g.power_w != null ? g.power_w.toFixed(1) : '—';
 
       const vramPct = g.mem_total_mb ? (g.mem_used_mb/g.mem_total_mb*100) : 0;
       setGauge('gpu', g.util_gpu_pct||0, '%');
@@ -905,7 +914,8 @@ async function fetchMetrics() {
       document.getElementById('m-vram').textContent = '—';
       document.getElementById('m-vram-detail').textContent = 'Telemetria indisponível';
       document.getElementById('m-gpu-temp').textContent = '—';
-      document.getElementById('m-power').textContent = '—';
+      document.getElementById('m-power').textContent = boardPower != null
+        ? Number(boardPower).toFixed(1) : '—';
       setGauge('gpu', 0, '%');
       setGauge('vram', 0, '%');
     }
@@ -986,12 +996,15 @@ async function fetchMetrics() {
 
     // Hardware tab
     if(!g.error) {
+      const memoryText = g.mem_used_mb != null && g.mem_total_mb != null
+        ? `${g.mem_used_mb.toFixed(0)} / ${g.mem_total_mb.toFixed(0)} MB`
+        : 'Memória compartilhada ou indisponível';
       document.getElementById('hw-gpu').innerHTML = `
         <table>
           <tr><td style="color:var(--sub)">Nome</td><td>${escapeHtml(g.name || 'N/A')}</td></tr>
-          <tr><td style="color:var(--sub)">VRAM</td><td>${g.mem_used_mb?.toFixed(0)} / ${g.mem_total_mb?.toFixed(0)} MB</td></tr>
-          <tr><td style="color:var(--sub)">Utilização</td><td>${g.util_gpu_pct?.toFixed(1)}%</td></tr>
-          <tr><td style="color:var(--sub)">Temperatura</td><td>${g.temp_c?.toFixed(0)} °C</td></tr>
+          <tr><td style="color:var(--sub)">VRAM</td><td>${memoryText}</td></tr>
+          <tr><td style="color:var(--sub)">Utilização</td><td>${g.util_gpu_pct != null ? g.util_gpu_pct.toFixed(1)+'%' : 'N/A'}</td></tr>
+          <tr><td style="color:var(--sub)">Temperatura</td><td>${g.temp_c != null ? g.temp_c.toFixed(0)+' °C' : 'N/A'}</td></tr>
           <tr><td style="color:var(--sub)">Potência</td><td>${g.power_w != null ? g.power_w.toFixed(1)+' W' : 'N/A'}</td></tr>
           <tr><td style="color:var(--sub)">Clock</td><td>${g.clock_mhz != null ? g.clock_mhz.toFixed(0)+' MHz' : 'N/A'}</td></tr>
           <tr><td style="color:var(--sub)">Fan</td><td>${g.fan_pct != null ? g.fan_pct.toFixed(0)+'%' : 'N/A'}</td></tr>
@@ -1002,6 +1015,28 @@ async function fetchMetrics() {
       document.getElementById('hw-gpu').innerHTML = `
         <div style="color:var(--sub);font-size:.82rem">${escapeHtml(g.error || 'Telemetria de GPU indisponível')}</div>
         ${g.detail ? `<div style="color:var(--dim);font-size:.72rem;margin-top:6px">${escapeHtml(g.detail)}</div>` : ''}`;
+    }
+    const telemetryHost = document.getElementById('hw-telemetry');
+    if(telemetryHost) {
+      if(t.error) {
+        telemetryHost.innerHTML = `<div style="color:var(--sub);font-size:.82rem">${escapeHtml(t.error)}</div>`;
+      } else {
+        const platform = t.platform || {};
+        const accelerators = Array.isArray(t.accelerators) ? t.accelerators : [];
+        const liveRows = accelerators.map(item => `<tr>
+          <td>${escapeHtml(item.kind || 'acelerador')}</td>
+          <td>${escapeHtml(item.name || item.id || '—')}</td>
+          <td>${item.utilization_pct != null ? Number(item.utilization_pct).toFixed(1)+'%' : 'N/A'}</td>
+          <td>${item.frequency_mhz != null ? Number(item.frequency_mhz).toFixed(0)+' MHz' : 'N/A'}</td>
+          <td>${item.temperature_c != null ? Number(item.temperature_c).toFixed(1)+' °C' : 'N/A'}</td>
+          <td>${item.power_w != null ? Number(item.power_w).toFixed(2)+' W' : 'N/A'}</td>
+        </tr>`).join('');
+        telemetryHost.innerHTML = `
+          <div style="font-size:.78rem;color:var(--sub);margin-bottom:8px">
+            Plataforma: <b>${escapeHtml(platform.model || platform.family || 'Linux')}</b> · Fontes: ${escapeHtml((t.sources || []).join(', ') || 'nenhuma')}${boardPower != null ? ` · Entrada: <b>${Number(boardPower).toFixed(2)} W</b>` : ''}${t.throttling?.active ? ' · <b style="color:var(--red)">Limitação térmica ativa</b>' : ''}
+          </div>
+          ${liveRows ? `<table><tr><th>Tipo</th><th>Dispositivo</th><th>Uso</th><th>Clock</th><th>Temperatura</th><th>Potência</th></tr>${liveRows}</table>` : ''}`;
+      }
     }
     if(!s.error) {
       document.getElementById('hw-sys').innerHTML = `
@@ -1561,8 +1596,10 @@ function doCompare() {
     ['RAM Pico (MB)', a.peak_ram_mb, b.peak_ram_mb, false],
     ['CPU médio (%)', a.avg_cpu_pct, b.avg_cpu_pct, null],
     ['GPU Pico (%)', a.peak_gpu_util, b.peak_gpu_util, null],
+    ['Acelerador Pico (%)', a.peak_accelerator_util, b.peak_accelerator_util, null],
     ['VRAM Pico (MB)', a.peak_vram_mb, b.peak_vram_mb, false],
     ['Temperatura Pico (°C)', a.peak_temp_c, b.peak_temp_c, false],
+    ['Limitação térmica', a.thermal_throttling_observed ? 'sim' : 'não', b.thermal_throttling_observed ? 'sim' : 'não', null],
     ['Energia (J)', a.energy_j, b.energy_j, false],
   ];
 
@@ -1782,25 +1819,26 @@ async function loadDetectedHardware(refresh=false) {
   try {
     const data = await requestJson('/api/hardware-detect' + (refresh ? '?refresh=1' : ''));
     const hardware = data.hardware || {};
+    const platform = hardware.platform || {};
     const cpu = hardware.cpu || {};
     const flags = Object.entries(cpu.flags || {}).filter(([, enabled]) => enabled).map(([name]) => name);
     const accelerators = hardware.accelerators?.devices || [];
     const serial = hardware.serial?.devices || [];
     const acceleratorRows = accelerators.map(item => `<tr>
       <td>${escapeHtml(item.category || '?')}</td>
-      <td>${escapeHtml(item.driver || '—')}</td>
+      <td>${escapeHtml(item.name || item.driver || '—')}</td>
       <td>${escapeHtml(item.address || item.path || '—')}</td>
-      <td>${escapeHtml([item.vendor_id, item.device_id].filter(Boolean).join(' / ') || '—')}</td>
+      <td>${escapeHtml([item.vendor_id, item.device_id, item.compatible].filter(Boolean).join(' / ') || '—')}</td>
     </tr>`).join('');
     const serialRows = serial.map(item => `<tr>
       <td>serial</td><td>—</td><td>${escapeHtml(item.path || '—')}</td><td>${escapeHtml(item.device || '—')}</td>
     </tr>`).join('');
     host.innerHTML = `
       <div style="font-size:.78rem;color:var(--sub);margin-bottom:8px">
-        Inventário: <b>${escapeHtml(data.hardware_id || '?')}</b> · Arquitetura: <b>${escapeHtml(cpu.arch || '?')}</b> · Instruções: ${escapeHtml(flags.join(', ') || 'nenhuma identificada')}
+        Inventário: <b>${escapeHtml(data.hardware_id || '?')}</b> · Plataforma: <b>${escapeHtml(platform.model || platform.family || 'Linux')}</b> · Arquitetura: <b>${escapeHtml(cpu.arch || '?')}</b> · Instruções: ${escapeHtml(flags.join(', ') || 'nenhuma identificada')}
       </div>
       ${(acceleratorRows || serialRows) ? `<table>
-        <tr><th>Tipo</th><th>Driver</th><th>Endereço/dispositivo</th><th>Identificação</th></tr>
+        <tr><th>Tipo</th><th>Nome/driver</th><th>Endereço/dispositivo</th><th>Identificação</th></tr>
         ${acceleratorRows}${serialRows}
       </table>` : '<div style="color:var(--sub);font-size:.82rem">Nenhum acelerador ou dispositivo serial exposto ao host.</div>'}
     `;

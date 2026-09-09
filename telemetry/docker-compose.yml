@@ -1,0 +1,23 @@
+services:
+  pdc-telemetry:
+    image: pdc-telemetry:cpu
+    build:
+      context: ..
+      dockerfile: telemetry/Dockerfile
+    container_name: pdc-telemetry
+    volumes:
+      - /sys:/host/sys:ro
+      - /proc:/host/proc:ro
+      - ../data/telemetry:/app/data/telemetry
+      - ${PDC_TEGRASTATS_PATH:-/dev/null}:/host-tools/tegrastats:ro
+    environment:
+      - PDC_TELEMETRY_INTERVAL_SEC=${PDC_TELEMETRY_INTERVAL_SEC:-1}
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    init: true
+    restart: unless-stopped
+    logging:
+      options:
+        max-size: "5m"
+        max-file: "2"

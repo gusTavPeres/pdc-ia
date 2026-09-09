@@ -1,0 +1,11 @@
+# Dependências do CLI e do dashboard no HOST. Enxuto de propósito: o trabalho
+# pesado acontece dentro dos containers, que usam shared/requirements.txt.
+#
+# numpy fica de fora: só dataset_loader e benchmark_suite usam, e esses rodam
+# exclusivamente dentro dos containers.
+psutil>=5.9
+pyyaml>=6.0
+requests>=2.31
+# pynvml já é opcional em tempo de execução (try/except); o marcador evita
+# instalá-lo em ARM, onde não existe dGPU NVIDIA suportada por este repositório.
+nvidia-ml-py>=12.560; platform_machine == "x86_64"

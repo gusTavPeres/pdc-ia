@@ -23,6 +23,7 @@ FRONTS = {
 }
 
 BASE_DIR = Path(__file__).parent.resolve()
+TELEMETRY_COMPOSE = BASE_DIR / "telemetry" / "docker-compose.yml"
 
 
 def _positive_int(value):
@@ -98,6 +99,10 @@ def _has_nvidia_gpu():
     return False
 
 
+def _supports_current_cuda_images():
+    return os.uname().machine.lower() in {"x86_64", "amd64"}
+
+
 def _compose_cmd(front, gpu_enabled=False):
     compose_file = BASE_DIR / FRONTS[front]["compose"]
     cmd = ["docker", "compose", "-f", str(compose_file)]
@@ -105,6 +110,28 @@ def _compose_cmd(front, gpu_enabled=False):
     if gpu_enabled and gpu_file.exists():
         cmd.extend(["-f", str(gpu_file)])
     return cmd
+
+
+def _telemetry_cmd():
+    return ["docker", "compose", "-f", str(TELEMETRY_COMPOSE)]
+
+
+def _telemetry_env():
+    env = os.environ.copy()
+    candidates = (
+        Path("/usr/bin/tegrastats"),
+        Path("/home/nvidia/tegrastats"),
+    )
+    tegrastats = next(
+        (path for path in candidates if path.is_file() and os.access(path, os.X_OK)),
+        Path("/dev/null"),
+    )
+    env["PDC_TEGRASTATS_PATH"] = str(tegrastats)
+    return env
+
+
+def _ensure_telemetry_directories():
+    (BASE_DIR / "data" / "telemetry" / "providers").mkdir(parents=True, exist_ok=True)
 
 
 def _container_limits(front):
@@ -135,6 +162,7 @@ def _runtime_env(gpu_enabled, front):
 
 def cmd_setup(_args):
     """Cria o ambiente Python usado pelo CLI e pelo dashboard."""
+    _ensure_telemetry_directories()
     venv_dir = BASE_DIR / ".venv"
     if not (venv_dir / "bin" / "python").is_file():
         info("Criando .venv...")
@@ -144,7 +172,7 @@ def cmd_setup(_args):
             raise SystemExit(1)
 
     python = venv_dir / "bin" / "python"
-    requirements = BASE_DIR / "shared" / "requirements.txt"
+    requirements = BASE_DIR / "shared" / "requirements-host.txt"
     info("Instalando dependências do host...")
     result = subprocess.run([
         str(python), "-m", "pip", "install", "--disable-pip-version-check",
@@ -193,6 +221,7 @@ def cmd_detect(args):
     header("Detecção de Hardware")
 
     cpu = caps.get("cpu", {})
+    platform_info = caps.get("platform", {})
     ram = caps.get("ram", {})
     gpu = caps.get("gpu", {})
     accelerators = caps.get("accelerators", {})
@@ -200,6 +229,10 @@ def cmd_detect(args):
     storage = caps.get("storage", {})
     temp = caps.get("temperature", {})
     power = caps.get("power", {})
+
+    print(f"\n{BOLD}Plataforma{RESET}")
+    print(f"  Família: {platform_info.get('family') or 'linux'}")
+    print(f"  Placa:   {platform_info.get('model') or 'não identificada'}")
 
     print(f"\n{BOLD}CPU{RESET}")
     print(f"  Modelo:   {cpu.get('model') or 'desconhecido'}")
@@ -223,7 +256,7 @@ def cmd_detect(args):
         print(f"  CUDA:   {gpu.get('cuda_version', '?')}")
         print(f"  CC:     {gpu.get('compute_capability', '?')}")
     else:
-        warn("  GPU NVIDIA não detectada (CPU-only)")
+        print("  GPU NVIDIA dedicada não detectada")
 
     print(f"\n{BOLD}Aceleradores{RESET}")
     accelerator_devices = accelerators.get("devices", [])
@@ -268,10 +301,23 @@ def cmd_build(args):
     if args.cpu and args.gpu:
         err("Use apenas um modo: --cpu ou --gpu")
         raise SystemExit(1)
+    if args.gpu and not _supports_current_cuda_images():
+        err("A variante CUDA atual é destinada a NVIDIA dGPU x86_64; em ARM use --cpu")
+        raise SystemExit(1)
     if args.gpu and not _has_nvidia_gpu():
         warn("nvidia-smi não está funcional; a variante GPU pode não iniciar")
-    gpu_enabled = args.gpu or (not args.cpu and _has_nvidia_gpu())
+    gpu_enabled = args.gpu or (
+        not args.cpu and _supports_current_cuda_images() and _has_nvidia_gpu())
     failures = 0
+    _ensure_telemetry_directories()
+    info("Construindo agente de telemetria do host...")
+    telemetry_result = subprocess.run(
+        _telemetry_cmd() + ["build"], cwd=BASE_DIR, env=_telemetry_env())
+    if telemetry_result.returncode == 0:
+        ok("telemetria build OK")
+    else:
+        err("telemetria build FALHOU")
+        failures += 1
     for front in fronts:
         if front not in FRONTS:
             err(f"Frente desconhecida: {front}. Use: {', '.join(FRONTS.keys())} ou all")
@@ -298,15 +344,28 @@ def cmd_up(args):
     if args.cpu and args.gpu:
         err("Use apenas um modo: --cpu ou --gpu")
         sys.exit(1)
+    if args.gpu and not _supports_current_cuda_images():
+        err("A variante CUDA atual é destinada a NVIDIA dGPU x86_64; em ARM use --cpu")
+        raise SystemExit(1)
     if args.gpu and not _has_nvidia_gpu():
         warn("nvidia-smi não está funcional; a variante GPU pode não iniciar")
-    gpu_enabled = args.gpu or (not args.cpu and _has_nvidia_gpu())
+    gpu_enabled = args.gpu or (
+        not args.cpu and _supports_current_cuda_images() and _has_nvidia_gpu())
     try:
         _, snapshot, _ = _capture_host_hardware()
         info(f"Inventário físico: {snapshot['hardware_id']}")
     except Exception as exc:
         warn(f"Não foi possível atualizar o inventário físico: {exc}")
     failures = 0
+    _ensure_telemetry_directories()
+    info("Subindo telemetria do host...")
+    telemetry_result = subprocess.run(
+        _telemetry_cmd() + ["up", "-d"], cwd=BASE_DIR, env=_telemetry_env())
+    if telemetry_result.returncode == 0:
+        ok("telemetria subiu")
+    else:
+        err("telemetria falhou ao subir")
+        failures += 1
     for front in fronts:
         if front not in FRONTS:
             err(f"Frente desconhecida: {front}")
@@ -341,6 +400,14 @@ def cmd_down(args):
         else:
             err(f"{front} falhou ao parar")
             failures += 1
+    if args.front == "all":
+        result = subprocess.run(
+            _telemetry_cmd() + ["down"], cwd=BASE_DIR, env=_telemetry_env())
+        if result.returncode == 0:
+            ok("telemetria parada")
+        else:
+            err("telemetria falhou ao parar")
+            failures += 1
     if failures:
         raise SystemExit(1)
 
@@ -353,6 +420,23 @@ def cmd_status(args):
     header("Status dos Containers PDC")
 
     all_ok = True
+    try:
+        from shared.device_telemetry import load_host_telemetry
+
+        telemetry = load_host_telemetry(
+            str(BASE_DIR / "data" / "telemetry" / "host.json"), max_age_sec=10)
+        if telemetry:
+            platform_info = telemetry.get("platform", {})
+            platform_name = platform_info.get("model") or platform_info.get("family") or "Linux"
+            sources = ", ".join(telemetry.get("sources", [])) or "sysfs"
+            print(f"  {GREEN}{'telemetria':8}{RESET}  local  ok        "
+                  f"{platform_name} [{sources}]")
+        else:
+            print(f"  {RED}{'telemetria':8}{RESET}  local  {RED}OFFLINE{RESET}")
+            all_ok = False
+    except Exception:
+        print(f"  {RED}{'telemetria':8}{RESET}  local  {RED}OFFLINE{RESET}")
+        all_ok = False
     for front, cfg in FRONTS.items():
         port = cfg["port"]
         try:
@@ -683,6 +767,438 @@ def _model_download_items(model_cfg):
     return items
 
 
+# --------------------------------------------------------------------- remoto
+# Executa a plataforma em um device da frota (Jetson, Raspberry Pi, mini PC).
+# Usa só ssh e rsync, que já existem nos dois lados: nenhum agente, nenhuma
+# dependência nova no alvo. O device é o nome que o ~/.ssh/config resolve
+# (jetson-nano, raspberry-pi5...) ou um usuario@host qualquer.
+
+REMOTE_DEFAULT_PATH = "~/pdc-ia"
+REMOTE_LOG = ".pdc-remote-run.log"
+REMOTE_PID = ".pdc-remote-run.pid"
+
+# O alvo compila e baixa por conta própria; mandar .venv, modelos ou resultados
+# pela VPN é desperdício e ainda quebra (venv tem caminho absoluto e binário
+# da arquitetura errada).
+REMOTE_EXCLUDES = (
+    ".git/", ".venv/", ".venv-test/", "__pycache__/", ".pytest_cache/", ".ruff_cache/",
+    "data/models/", "data/datasets/", "data/hardware/", "data/telemetry/",
+    "data/ultralytics/", "results/", "*.pyc", "*.log", ".pdc-remote-run.pid",
+)
+
+REMOTE_RESOLVE = r'''
+case "$1" in
+  /*)    P="$1" ;;
+  "~/"*) P="$HOME/${1#\~/}" ;;
+  *)     P="$HOME/$1" ;;
+esac
+'''
+
+REMOTE_CHECK_SCRIPT = REMOTE_RESOLVE + r"""
+set -u
+p() { printf '%s=%s\n' "$1" "$2"; }
+p arch "$(uname -m)"
+p kernel "$(uname -r)"
+p os "$(. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME" || echo desconhecido)"
+if command -v python3 >/dev/null 2>&1; then
+  p python "$(python3 -c 'import sys;print("%d.%d"%sys.version_info[:2])' 2>/dev/null || echo erro)"
+  python3 -c 'import venv' 2>/dev/null && p venv sim || p venv NAO
+else
+  p python AUSENTE; p venv NAO
+fi
+command -v docker >/dev/null 2>&1 \
+  && p docker "$(docker --version 2>/dev/null | awk '{print $3}' | tr -d ,)" || p docker AUSENTE
+docker compose version >/dev/null 2>&1 && p compose sim || p compose NAO
+docker ps >/dev/null 2>&1 && p docker_sem_sudo sim || p docker_sem_sudo NAO
+command -v rsync >/dev/null 2>&1 && p rsync sim || p rsync NAO
+command -v git >/dev/null 2>&1 && p git "$(git --version 2>/dev/null | awk '{print $3}')" || p git AUSENTE
+if [ -n "${2:-}" ] && command -v git >/dev/null 2>&1; then
+  timeout 20 git ls-remote --heads "$2" >/dev/null 2>&1 && p origin alcancavel || p origin INALCANCAVEL
+else
+  p origin "?"
+fi
+p nproc "$(nproc 2>/dev/null || echo ?)"
+p ram_mb "$(awk '/MemTotal/{printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo ?)"
+p livre_home "$(df -Pm "$HOME" 2>/dev/null | awk 'NR==2{printf "%d", $4}' || echo ?)"
+[ -x /usr/bin/tegrastats ] && p tegrastats sim || p tegrastats nao
+[ -f "$P/pdc" ] && p repo presente || p repo ausente
+"""
+
+# Ordem e rótulo do relatório do check. Só o que decide se roda ou não.
+REMOTE_CHECK_FIELDS = (
+    ("os", "Sistema"), ("arch", "Arquitetura"), ("kernel", "Kernel"),
+    ("nproc", "CPUs"), ("ram_mb", "RAM (MB)"), ("livre_home", "Disco livre (MB)"),
+    ("python", "Python"), ("venv", "módulo venv"), ("docker", "Docker"),
+    ("compose", "docker compose"), ("docker_sem_sudo", "Docker sem sudo"),
+    ("git", "git"), ("origin", "Acesso ao GitHub"), ("rsync", "rsync (só p/ --from-local)"),
+    ("tegrastats", "tegrastats (Jetson)"), ("repo", "Repositório"),
+)
+
+
+def _ssh_base(device, tty=False):
+    cmd = ["ssh"]
+    if tty:
+        cmd.append("-tt")
+    # BatchMode: sem chave instalada falha na hora, em vez de travar num prompt
+    # de senha que ninguém vai responder num script.
+    cmd += ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", device]
+    return cmd
+
+
+def _ssh_script(device, script, script_args=(), capture=True, tty=False):
+    """Roda um script bash no device mandando por stdin: sem inferno de aspas."""
+    cmd = _ssh_base(device, tty=tty) + ["bash", "-s", "--", *script_args]
+    if capture:
+        return subprocess.run(cmd, input=script, text=True, capture_output=True)
+    return subprocess.run(cmd, input=script, text=True)
+
+
+def _remote_probe(device, remote_path, origin=""):
+    """Coleta os pré-requisitos do device como pares chave=valor."""
+    result = _ssh_script(device, REMOTE_CHECK_SCRIPT, [remote_path, origin])
+    if result.returncode != 0:
+        detail = (result.stderr or "").strip().splitlines()
+        err(f"Não foi possível falar com {device} por SSH")
+        for line in detail[:3]:
+            print(f"    {line}", file=sys.stderr)
+        info("Instale a chave pública no device e tente de novo.")
+        raise SystemExit(1)
+    return _parse_facts(result.stdout)
+
+
+def _parse_facts(stdout):
+    """Converte a saída chave=valor do probe em dicionário."""
+    facts = {}
+    for line in stdout.splitlines():
+        if "=" in line:
+            key, _, value = line.partition("=")
+            facts[key.strip()] = value.strip()
+    return facts
+
+
+def _remote_blockers(facts, modo="git"):
+    """Lista o que impede a execução. Vazio significa que dá para rodar.
+
+    modo "git": o device baixa o código do GitHub com a internet dele.
+    modo "local": o código é empurrado daqui, e aí sim precisa de rsync.
+    """
+    blockers = []
+    if modo == "git":
+        if facts.get("git", "AUSENTE") == "AUSENTE":
+            blockers.append("git ausente no device (apt install git)")
+        elif facts.get("origin") == "INALCANCAVEL":
+            blockers.append("o device não alcança o GitHub; use --from-local")
+    elif facts.get("rsync") != "sim":
+        blockers.append("rsync ausente no device (apt install rsync), exigido por --from-local")
+    if facts.get("docker", "AUSENTE") == "AUSENTE":
+        blockers.append("Docker não instalado (curl -fsSL https://get.docker.com | sh)")
+    if facts.get("compose") != "sim":
+        blockers.append("plugin docker compose ausente (instale docker-compose-plugin)")
+    if facts.get("docker_sem_sudo") != "sim":
+        blockers.append(
+            "usuário não usa Docker sem sudo "
+            "(sudo usermod -aG docker $USER e reabra a sessão)")
+    if facts.get("python", "AUSENTE") == "AUSENTE":
+        blockers.append("Python 3 ausente")
+    else:
+        try:
+            versao = tuple(int(n) for n in facts["python"].split(".")[:2])
+        except ValueError:
+            versao = None
+        if versao is None:
+            blockers.append("não foi possível ler a versão do Python no device")
+        elif versao < (3, 10):
+            blockers.append(f"Python {facts['python']} é antigo demais; o projeto pede 3.10+")
+    if facts.get("venv") != "sim":
+        blockers.append("módulo venv ausente (apt install python3-venv)")
+    arch = facts.get("arch", "")
+    if arch in {"armv7l", "armv6l"}:
+        blockers.append(
+            f"{arch} é ARM 32 bits: só o agente de telemetria roda. "
+            "Visão, SLM e áudio exigem ARM64 (veja docs/ARM.md)")
+    return blockers
+
+
+def _remote_cpu_only(facts):
+    """ARM não tem imagem CUDA neste repositório; força a variante CPU."""
+    return facts.get("arch", "").lower() not in {"x86_64", "amd64"}
+
+
+def _git_local(*args, padrao=""):
+    """Roda um git no repositório local e devolve a saída limpa."""
+    result = subprocess.run(
+        ["git", "-C", str(BASE_DIR), *args], capture_output=True, text=True)
+    return result.stdout.strip() if result.returncode == 0 else padrao
+
+
+def _git_origin():
+    return _git_local("remote", "get-url", "origin")
+
+
+def _git_ref_atual():
+    return _git_local("rev-parse", "--abbrev-ref", "HEAD", padrao="main")
+
+
+def _avisos_de_defasagem(ref):
+    """Avisa quando o device vai rodar código diferente do que está aqui.
+
+    É a armadilha do modo git: o device baixa o que está no GitHub, não o que
+    está nesta pasta. Um benchmark medindo código antigo passa despercebido.
+    """
+    avisos = []
+    sujo = _git_local("status", "--porcelain")
+    if sujo:
+        avisos.append(
+            f"{len(sujo.splitlines())} arquivo(s) sem commit aqui não vão para o device")
+    pendentes = _git_local("rev-list", "--count", f"origin/{ref}..{ref}", padrao="0")
+    if pendentes not in {"0", ""}:
+        avisos.append(f"{pendentes} commit(s) locais ainda não enviados para o origin")
+    return avisos
+
+
+REMOTE_GIT_SCRIPT = REMOTE_RESOLVE + r'''
+URL="$2"; REF="$3"
+if [ ! -d "$P/.git" ]; then
+    mkdir -p "$P" || exit 1
+    git clone "$URL" "$P" || exit 1
+fi
+cd "$P" || exit 1
+git remote set-url origin "$URL" || exit 1
+git fetch origin "$REF" || exit 1
+# checkout -f deixa o HEAD destacado no commit exato: o resultado do benchmark
+# fica atrelado a um SHA, e nao a "seja la o que a branch era naquele dia".
+git checkout -f FETCH_HEAD || exit 1
+git --no-pager log -1 --format="__PDC_SHA__=%h %s"
+'''
+
+
+def cmd_remote(args):
+    """Despacha os subcomandos de execução remota."""
+    actions = {
+        "check": _remote_check, "deploy": _remote_deploy,
+        "run": _remote_run, "logs": _remote_logs, "fetch": _remote_fetch,
+    }
+    actions[args.remote_command](args)
+
+
+def _remote_check(args):
+    """Mostra se o device tem o necessário para rodar a plataforma."""
+    remote_path = args.path
+    facts = _remote_probe(args.device, remote_path, _git_origin())
+    print(f"\n{BOLD}{args.device}{RESET}  ({remote_path})")
+    for key, label in REMOTE_CHECK_FIELDS:
+        value = facts.get(key, "?")
+        color = RED if value in {"NAO", "AUSENTE"} else ""
+        reset = RESET if color else ""
+        print(f"  {label:<22} {color}{value}{reset}")
+    blockers = _remote_blockers(facts)
+    print()
+    if blockers:
+        err(f"{len(blockers)} pendência(s) antes de rodar:")
+        for item in blockers:
+            print(f"    - {item}")
+        raise SystemExit(1)
+    modo = "CPU (ARM)" if _remote_cpu_only(facts) else "auto (x86_64)"
+    ok(f"Pronto para rodar em modo {modo}")
+    if facts.get("repo") == "ausente":
+        info(f"Repositório ainda não está lá. Rode: ./pdc remote deploy {args.device}")
+
+
+def _remote_deploy(args):
+    """Coloca o código no device e prepara o ambiente.
+
+    Por padrão o próprio device baixa do GitHub com a internet dele: não passa
+    pela VPN e o benchmark fica atrelado a um commit. --from-local envia o que
+    está nesta pasta, para testar trabalho ainda sem commit.
+    """
+    modo = "local" if args.from_local else "git"
+    origin = _git_origin() if modo == "git" else ""
+    facts = _remote_probe(args.device, args.path, origin)
+    blockers = _remote_blockers(facts, modo)
+    if blockers:
+        err("O device não passou no check:")
+        for item in blockers:
+            print(f"    - {item}")
+        info(f"Detalhes: ./pdc remote check {args.device}")
+        raise SystemExit(1)
+
+    if modo == "git":
+        if not origin:
+            err("Este repositório não tem 'origin'. Use --from-local.")
+            raise SystemExit(1)
+        ref = args.ref or _git_ref_atual()
+        for aviso in _avisos_de_defasagem(ref):
+            warn(aviso)
+        info(f"{args.device} baixando {ref} de {origin} pela internet dele ...")
+        result = _ssh_script(
+            args.device, REMOTE_GIT_SCRIPT, [args.path, origin, ref], capture=True)
+        sha = ""
+        for linha in (result.stdout or "").splitlines():
+            if linha.startswith("__PDC_SHA__="):
+                sha = linha.split("=", 1)[1]
+        if result.returncode != 0 or not sha:
+            err(f"Falhou ao baixar {ref} no device")
+            print((result.stderr or "").strip()[:600], file=sys.stderr)
+            raise SystemExit(1)
+        ok(f"Código em {sha}")
+    else:
+        info(f"Enviando esta pasta para {args.device}:{args.path} ...")
+        excludes = []
+        for pattern in REMOTE_EXCLUDES:
+            excludes += ["--exclude", pattern]
+        rsync = subprocess.run([
+            "rsync", "-az", "--delete", "--info=stats1",
+            "-e", "ssh -o BatchMode=yes -o ConnectTimeout=10",
+            *excludes, f"{BASE_DIR}/", f"{args.device}:{args.path}/",
+        ])
+        if rsync.returncode != 0:
+            err("rsync falhou")
+            raise SystemExit(1)
+        ok("Código sincronizado")
+
+    steps = [("./pdc setup", "ambiente Python")]
+    if not args.no_models:
+        steps.append(("./pdc models download defaults", "modelos padrão"))
+    for command, label in steps:
+        info(f"Preparando {label} em {args.device} ...")
+        result = _ssh_script(
+            args.device, REMOTE_RESOLVE + f'cd "$P" && {command}\n', [args.path],
+            capture=False)
+        if result.returncode != 0:
+            err(f"Falhou: {command}")
+            raise SystemExit(1)
+        ok(label)
+    ok(f"{args.device} pronto. Agora: ./pdc remote run {args.device}")
+
+
+def _remote_run(args):
+    """Roda build, up e benchmark no device e traz os resultados."""
+    facts = _remote_probe(args.device, args.path)
+    if facts.get("repo") != "presente":
+        err(f"O projeto não está em {args.device}:{args.path}")
+        info(f"Rode antes: ./pdc remote deploy {args.device}")
+        raise SystemExit(1)
+    blockers = _remote_blockers(facts, modo="local")
+    if blockers:
+        err("O device não passou no check:")
+        for item in blockers:
+            print(f"    - {item}")
+        raise SystemExit(1)
+
+    modo = " --cpu" if _remote_cpu_only(facts) else ""
+    front = args.front
+    remote_cmds = (
+        f"./pdc build {front}{modo} && "
+        f"./pdc up {front}{modo} && "
+        f"./pdc status && "
+        f"./pdc benchmark {front} --profile {args.profile}"
+    )
+    launcher = _remote_launcher(remote_cmds)
+    start = _ssh_script(args.device, launcher, [args.path])
+    if "__PDC_BUSY__" in (start.stdout or ""):
+        err(f"Já existe um benchmark rodando em {args.device}")
+        info(f"Acompanhe com: ./pdc remote logs {args.device}")
+        raise SystemExit(1)
+    if start.returncode != 0 or "__PDC_STARTED__" not in (start.stdout or ""):
+        err("Não foi possível iniciar o benchmark")
+        print((start.stderr or "").strip(), file=sys.stderr)
+        raise SystemExit(1)
+
+    ok(f"Benchmark iniciado em {args.device} (perfil {args.profile}, frente {front})")
+    if args.detach:
+        info(f"Rodando solto. Acompanhe: ./pdc remote logs {args.device}")
+        info(f"Ao terminar:            ./pdc remote fetch {args.device}")
+        return
+    code = _remote_stream(args.device, args.path)
+    _remote_fetch(args)
+    if code is None:
+        return
+    if code != 0:
+        err(f"Benchmark terminou com código {code}")
+        raise SystemExit(1)
+    ok("Benchmark concluído")
+
+
+def _remote_launcher(remote_cmds):
+    """Monta o script que dispara o trabalho solto do terminal no device.
+
+    setsid + nohup porque um benchmark em Raspberry Pi leva horas e a sessão
+    passa por uma VPN: sem isso, uma queda de link mata o teste no meio.
+    """
+    return REMOTE_RESOLVE + (
+        'cd "$P" || exit 1\n'
+        f'if [ -f {REMOTE_PID} ] && kill -0 "$(cat {REMOTE_PID})" 2>/dev/null; then\n'
+        '  echo "__PDC_BUSY__"; exit 3\n'
+        'fi\n'
+        # Os parênteses existem para que um exit dentro da cadeia não pule a
+        # sentinela: sem ela, quem acompanha o log esperaria para sempre.
+        f'setsid nohup bash -c \'echo $$ > {REMOTE_PID}; ({remote_cmds}); '
+        f'echo "__PDC_RC__=$?"\' '
+        f'> {REMOTE_LOG} 2>&1 < /dev/null &\n'
+        'sleep 1; echo "__PDC_STARTED__"\n'
+    )
+
+
+def _remote_stream(device, remote_path):
+    """Acompanha o log até o processo terminar. Devolve o código de saída dele.
+
+    Segue o PID e não só a sentinela: um benchmark morto por OOM na placa não
+    escreve sentinela nenhuma, e sem isso o acompanhamento travaria calado.
+    """
+    script = REMOTE_RESOLVE + (
+        'cd "$P" || exit 1\n'
+        'PID=$(cat "$3" 2>/dev/null || true)\n'
+        'if [ -n "${PID:-}" ] && kill -0 "$PID" 2>/dev/null; then\n'
+        '  tail -n +1 -f --pid="$PID" "$2"\n'
+        'else\n'
+        '  cat "$2" 2>/dev/null\n'
+        'fi\n'
+    )
+    proc = subprocess.Popen(
+        _ssh_base(device) + ["bash", "-s", "--", remote_path, REMOTE_LOG, REMOTE_PID],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+    )
+    proc.stdin.write(script)
+    proc.stdin.close()
+    code = None
+    try:
+        for line in proc.stdout:
+            if line.startswith("__PDC_RC__="):
+                code = int(line.strip().split("=", 1)[1] or 1)
+                break
+            print(line, end="", flush=True)
+    except KeyboardInterrupt:
+        warn("Saindo do acompanhamento. O benchmark continua rodando no device.")
+        info(f"Reata com: ./pdc remote logs {device}")
+    finally:
+        proc.terminate()
+    if code is None:
+        warn("O processo terminou sem registrar o código de saída (pode ter sido morto).")
+    return code  # None = ainda rodando, interrompido, ou morto sem sentinela
+
+
+def _remote_logs(args):
+    """Reata ao log de uma execução em andamento."""
+    raise SystemExit(_remote_stream(args.device, args.path) or 0)
+
+
+def _remote_fetch(args):
+    """Traz os resultados do device para results/remote/<device>/."""
+    destino = BASE_DIR / "results" / "remote" / args.device.replace("/", "_")
+    destino.mkdir(parents=True, exist_ok=True)
+    info(f"Trazendo resultados para {destino.relative_to(BASE_DIR)}/ ...")
+    result = subprocess.run([
+        "rsync", "-az", "--info=stats1",
+        "-e", "ssh -o BatchMode=yes -o ConnectTimeout=10",
+        f"{args.device}:{args.path}/results/", f"{destino}/",
+    ])
+    if result.returncode != 0:
+        warn("Nenhum resultado trazido (o device pode não ter gerado nenhum ainda)")
+        return
+    arquivos = sorted(destino.rglob("*.json"))
+    ok(f"{len(arquivos)} arquivo(s) em {destino.relative_to(BASE_DIR)}/")
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="pdc",
@@ -761,6 +1277,53 @@ def main():
     p_models_dl.add_argument("model_name", nargs="?", metavar="model")
     p_models_dl.add_argument("--defaults", action="store_true", help="Baixa apenas modelos padrão")
 
+    # remote
+    p_remote = sub.add_parser(
+        "remote",
+        help="Executa a plataforma em um device da frota via SSH",
+        description=(
+            "Roda a plataforma em um device da frota (Jetson, Raspberry Pi, mini PC).\n"
+            "device e o nome que o ~/.ssh/config resolve, ou usuario@host.\n\n"
+            "  ./pdc remote check  jetson-nano\n"
+            "  ./pdc remote deploy jetson-nano\n"
+            "  ./pdc remote run    jetson-nano --profile express\n"
+            "  ./pdc remote logs   jetson-nano\n"
+            "  ./pdc remote fetch  jetson-nano"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    remote_sub = p_remote.add_subparsers(dest="remote_command", required=True)
+    for nome, ajuda in (
+        ("check", "Verifica pre-requisitos no device"),
+        ("deploy", "Envia o projeto e prepara o ambiente"),
+        ("run", "Roda build, up e benchmark e traz os resultados"),
+        ("logs", "Acompanha o log de uma execucao em andamento"),
+        ("fetch", "Traz os resultados do device"),
+    ):
+        p_sub = remote_sub.add_parser(nome, help=ajuda)
+        p_sub.add_argument("device", help="Nome no ~/.ssh/config ou usuario@host")
+        p_sub.add_argument(
+            "--path", default=REMOTE_DEFAULT_PATH,
+            help=f"Caminho no device (padrao: {REMOTE_DEFAULT_PATH})")
+        if nome == "deploy":
+            p_sub.add_argument(
+                "--no-models", action="store_true",
+                help="Nao baixa os modelos padrao no device")
+            p_sub.add_argument(
+                "--ref", help="Branch ou tag a baixar (padrao: a branch atual daqui)")
+            p_sub.add_argument(
+                "--from-local", action="store_true",
+                help="Envia esta pasta por rsync em vez de o device baixar do git")
+        if nome == "run":
+            p_sub.add_argument(
+                "--front", default="all", help="vision|slm|audio|all (padrao: all)")
+            p_sub.add_argument(
+                "--profile", default="express",
+                help="express|quick|standard|extended (padrao: express)")
+            p_sub.add_argument(
+                "--detach", action="store_true",
+                help="Inicia e volta ao terminal sem acompanhar o log")
+
     args = parser.parse_args()
 
     if args.command == "setup":
@@ -783,6 +1346,8 @@ def main():
         cmd_results(args)
     elif args.command == "models":
         cmd_models(args)
+    elif args.command == "remote":
+        cmd_remote(args)
     else:
         parser.print_help()
 

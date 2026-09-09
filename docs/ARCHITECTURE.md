@@ -6,6 +6,7 @@
 pdc (CLI) ───────────────┐
                          ├─ Docker Compose
 dashboard/API :8099 ─────┤
+                         ├─ telemetry (host sensors)
                          ├─ vision :8010
                          ├─ slm    :8011
                          └─ audio  :8012
@@ -31,16 +32,20 @@ latência, coleta de recursos e formato de saída sejam iguais entre as frentes.
 3. `shared.capabilities` combina o inventário físico com a visibilidade do
    runtime sem substituir um pelo outro.
 4. A frente executa aquecimento e as fases habilitadas no perfil.
-5. `MetricsCollector` amostra cgroup, processos, NVML, sensores térmicos e RAPL
-   quando essas fontes existem.
-6. O resultado recebe metodologia, contexto de execução, scorecard e um
+5. `pdc-telemetry` publica sensores Linux do host e `tegrastats` em Jetson.
+6. `MetricsCollector` amostra cgroup, processos, NVML, RAPL e a telemetria do
+   host quando essas fontes existem.
+7. O resultado recebe metodologia, contexto de execução, scorecard e um
    `run_id`, sendo gravado atomicamente em `results/`.
-7. O dashboard normaliza resultados atuais e legados para exibição.
+8. O dashboard normaliza resultados atuais e legados para exibição.
 
 ## Variantes de Imagem
 
-- `cpu`: não exige runtime de GPU e é a base portátil;
-- `gpu`: usa os Dockerfiles e overrides NVIDIA de cada frente;
+- `cpu`: não exige runtime de GPU, possui dependências para `amd64` e `arm64` e
+  é construída nativamente no host;
+- `gpu`: usa os Dockerfiles e overrides de NVIDIA dGPU em `x86_64`;
+- `telemetry`: imagem sem dependências binárias, comum a Linux `amd64`,
+  `arm64` e `arm/v7`;
 - seleção automática: só usa `gpu` quando `nvidia-smi` responde e o runtime
   NVIDIA está disponível;
 - seleção explícita: `./pdc build|up ... --cpu` ou `--gpu`.
@@ -53,11 +58,13 @@ versão, um manifesto multi-arquitetura pronto.
 | Hardware | Inventário | Execução de carga | Telemetria dedicada |
 | --- | --- | --- | --- |
 | CPU x86_64 | sim | sim | cgroup, processos, térmica e RAPL quando disponível |
-| CPU ARM64 | sim | alvo da imagem CPU; validar por placa | cgroup, processos e sensores expostos pelo kernel |
+| CPU ARM64 | sim | sim na imagem CPU; validar nativamente por placa | cgroup, processos, thermal, cpufreq e hwmon |
+| CPU ARMv7 | sim pelo agente | frentes de IA não suportadas | thermal, cpufreq, devfreq e hwmon pelo agente |
 | GPU NVIDIA | sim | Vision, SLM e ASR na variante CUDA; TTS em CPU | NVML/`nvidia-smi` |
+| NVIDIA Jetson | sim | CPU; CUDA requer variante compatível com JetPack | sysfs e `tegrastats` |
 | GPU Intel/AMD | parcial | CPU apenas nesta versão | sensores genéricos quando expostos; sem OpenVINO/ROCm |
-| NPU/TPU PCI ou device node | sim, quando identificável | não | não |
-| Acelerador USB para SBC | parcial, conforme device node | não | não |
+| NPU/TPU PCI, USB, platform bus ou device node | sim, quando identificável | não | devfreq ou provedor externo |
+| Acelerador USB para SBC | sim para identificações conhecidas | não | provedor externo |
 | Interface serial/MCU | sim | sem upload ou benchmark de firmware | não |
 
 “Inventário” significa presença detectada no host. O resultado só atribui uma
@@ -66,7 +73,9 @@ utilizados.
 
 ## Limites da Abstração
 
-A portabilidade atual cobre o ciclo comum de benchmark e os backends CPU/CUDA.
+A portabilidade atual cobre o ciclo comum de benchmark, os backends CPU e CUDA
+dGPU e a coleta genérica de telemetria do host. A memória integrada de uma SBC
+não é registrada como VRAM dedicada.
 Adicionar um runtime de NPU requer três integrações explícitas:
 
 1. carregador e função de inferência da frente;
@@ -82,6 +91,8 @@ inferência foi executada no acelerador.
 - `config/` e `shared/` são montados como somente leitura nos containers;
 - `data/`, `results/` e `/dev/shm` são graváveis;
 - `/sys` é montado como somente leitura para inventário e cgroup;
+- o agente monta `/sys` e `/proc` do host como somente leitura e mantém o
+  filesystem raiz do container também somente leitura;
 - controles de container no dashboard dependem de acesso local ao daemon
   Docker;
 - não há autenticação HTTP, portanto a exposição em rede deve ser feita por

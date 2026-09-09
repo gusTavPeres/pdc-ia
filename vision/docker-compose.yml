@@ -17,6 +17,7 @@ services:
       - PDC_FRONT=vision
       - PDC_GPU_MODE=${PDC_GPU_MODE:-cpu}
       - PDC_IMAGE_VARIANT=${PDC_IMAGE_VARIANT:-cpu}
+      - PDC_HOST_TELEMETRY_PATH=/app/data/telemetry/host.json
     shm_size: ${PDC_SHM_SIZE:-256m}
     cpus: ${PDC_CPU_LIMIT:-0}
     mem_limit: ${PDC_MEMORY_LIMIT:-0}

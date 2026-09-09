@@ -12,6 +12,8 @@ import tempfile
 from datetime import datetime
 from typing import Optional
 
+from shared.device_telemetry import detect_platform
+
 try:
     import psutil
     _PSUTIL = True
@@ -85,7 +87,7 @@ def _detect_cpu() -> dict:
             key = key.strip().lower()
             value = value.strip()
             if cpu["model"] is None and key in (
-                    "model name", "hardware", "processor", "cpu model"):
+                    "model", "model name", "hardware", "processor", "cpu model"):
                 if value and not value.isdigit():
                     cpu["model"] = value
             if key in ("flags", "features") and not feature_set:
@@ -495,12 +497,18 @@ def _detect_power() -> dict:
 def _read_sysfs(path: str) -> Optional[str]:
     try:
         with open(path) as handle:
-            return handle.read().strip()
+            return handle.read().replace("\x00", " ").strip()
     except OSError:
         return None
 
 
 _NPU_DRIVER_MARKERS = ("ivpu", "xdna", "hailo", "apex", "rknpu", "ethos", "neuron", "npu")
+_GPU_DRIVER_MARKERS = ("nvgpu", "panfrost", "mali", "adreno", "etnaviv", "vivante", "gpu")
+_USB_ACCELERATOR_IDS = {
+    ("18d1", "9302"): ("tpu", "Google Coral USB Edge TPU"),
+    ("1a6e", "089a"): ("tpu", "Google Coral USB Edge TPU"),
+    ("03e7", "2485"): ("accelerator", "Intel Movidius Neural Compute Stick 2"),
+}
 
 
 def _pci_accelerator_category(class_code: str, driver: Optional[str]) -> Optional[str]:
@@ -532,6 +540,50 @@ def _detect_accelerators() -> dict:
             "driver": driver,
         })
 
+    for base in sorted(glob.glob("/sys/bus/platform/devices/*")):
+        driver_path = os.path.join(base, "driver")
+        driver = os.path.basename(os.path.realpath(driver_path)) \
+            if os.path.exists(driver_path) else None
+        compatible = _read_sysfs(os.path.join(base, "of_node", "compatible")) or ""
+        identity = f"{os.path.basename(base)} {driver or ''} {compatible}".lower()
+        if any(marker in identity for marker in _NPU_DRIVER_MARKERS):
+            category = "npu"
+        elif any(marker in identity for marker in _GPU_DRIVER_MARKERS):
+            category = "gpu"
+        else:
+            continue
+        devices.append({
+            "kind": "platform",
+            "category": category,
+            "address": os.path.basename(base),
+            "compatible": compatible or None,
+            "driver": driver,
+        })
+
+    for base in sorted(glob.glob("/sys/bus/usb/devices/*")):
+        vendor_id = (_read_sysfs(os.path.join(base, "idVendor")) or "").lower()
+        product_id = (_read_sysfs(os.path.join(base, "idProduct")) or "").lower()
+        manufacturer = _read_sysfs(os.path.join(base, "manufacturer"))
+        product = _read_sysfs(os.path.join(base, "product"))
+        known = _USB_ACCELERATOR_IDS.get((vendor_id, product_id))
+        identity = f"{manufacturer or ''} {product or ''}".lower()
+        if known:
+            category, name = known
+        elif any(marker in identity for marker in (
+                "edge tpu", "coral", "movidius", "neural compute", "hailo")):
+            category, name = "accelerator", product or manufacturer or "USB accelerator"
+        else:
+            continue
+        devices.append({
+            "kind": "usb",
+            "category": category,
+            "address": os.path.basename(base),
+            "vendor_id": f"0x{vendor_id}" if vendor_id else None,
+            "device_id": f"0x{product_id}" if product_id else None,
+            "name": name,
+            "driver": None,
+        })
+
     node_patterns = {
         "npu": (
             "/dev/accel/accel*", "/dev/apex_*", "/dev/hailo*",
@@ -547,11 +599,20 @@ def _detect_accelerators() -> dict:
                 if real_path in known_nodes:
                     continue
                 known_nodes.add(real_path)
+                driver = None
+                if path.startswith("/dev/dri/"):
+                    driver_path = os.path.join(
+                        "/sys/class/drm", os.path.basename(path), "device", "driver")
+                    if os.path.exists(driver_path):
+                        driver = os.path.basename(os.path.realpath(driver_path))
+                    if driver and any(marker in driver.lower()
+                                      for marker in _NPU_DRIVER_MARKERS):
+                        category = "npu"
                 devices.append({
                     "kind": "device_node",
                     "category": category,
                     "path": path,
-                    "driver": None,
+                    "driver": driver,
                 })
     return {"available": bool(devices), "devices": devices}
 
@@ -580,6 +641,8 @@ def hardware_fingerprint(capabilities: dict) -> str:
     accelerators = capabilities.get("accelerators")
     accelerators = accelerators if isinstance(accelerators, dict) else {}
     serial = capabilities.get("serial") if isinstance(capabilities.get("serial"), dict) else {}
+    platform_info = capabilities.get("platform") \
+        if isinstance(capabilities.get("platform"), dict) else {}
 
     identity = {
         "cpu": {key: cpu.get(key) for key in (
@@ -589,7 +652,8 @@ def hardware_fingerprint(capabilities: dict) -> str:
             "model", "vram_mb", "compute_capability")},
         "accelerators": [
             {key: device.get(key) for key in (
-                "kind", "category", "address", "path", "vendor_id", "device_id", "driver")}
+                "kind", "category", "name", "address", "path", "vendor_id",
+                "device_id", "compatible", "driver")}
             for device in accelerators.get("devices", []) if isinstance(device, dict)
         ],
         "serial": [
@@ -597,6 +661,8 @@ def hardware_fingerprint(capabilities: dict) -> str:
             for device in serial.get("devices", []) if isinstance(device, dict)
         ],
         "storage": {key: storage.get(key) for key in ("type", "device")},
+        "platform": {key: platform_info.get(key) for key in (
+            "family", "model", "compatible", "architecture")},
     }
     encoded = json.dumps(identity, ensure_ascii=True, sort_keys=True,
                          separators=(",", ":")).encode()
@@ -702,6 +768,7 @@ class CapabilityDetector:
     def detect(self, use_host_snapshot: bool = True) -> dict:
         """Retorna as capacidades disponíveis sem exigir cada sensor."""
         detected = {
+            "platform": detect_platform(),
             "cpu": _detect_cpu(),
             "ram": _detect_ram(),
             "gpu": _detect_gpu(),

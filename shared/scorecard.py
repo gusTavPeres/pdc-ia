@@ -214,6 +214,8 @@ def compute_scorecard(result: dict, hardware_config: Optional[dict] = None) -> d
         warnings.append("energy telemetry covered less than 90% of the resource phase")
     if energy_derived:
         warnings.append("energy estimated from average power and resource measurement duration")
+    if resource.get("thermal_throttling_observed"):
+        warnings.append("thermal throttling was active during the resource phase")
 
     return {
         "schema_version": "scorecard-2026.07-v2",

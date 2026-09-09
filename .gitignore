@@ -2,6 +2,7 @@
 data/models/
 data/datasets/
 data/hardware/
+data/telemetry/
 data/ultralytics/
 *.gguf
 *.pt

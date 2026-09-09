@@ -1,12 +1,17 @@
 FROM python:3.11-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    cmake \
-    curl \
-    libopenblas-dev \
-    pkg-config \
-    && rm -rf /var/lib/apt/lists/*
+RUN set -eux; \
+    packages="build-essential cmake curl libopenblas-dev pkg-config"; \
+    for attempt in 1 2 3; do \
+        rm -rf /var/lib/apt/lists/*; \
+        if apt-get -o Acquire::Retries=3 update \
+            && apt-get -o Acquire::Retries=3 install -y --no-install-recommends $packages; then \
+            break; \
+        fi; \
+        if [ "$attempt" -eq 3 ]; then exit 1; fi; \
+        sleep 5; \
+    done; \
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 

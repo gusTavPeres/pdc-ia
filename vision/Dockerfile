@@ -2,14 +2,18 @@ FROM python:3.11-slim
 
 ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
-    libgl1 \
-    libglib2.0-0 \
-    libsm6 \
-    libxext6 \
-    libxrender1 \
-    && rm -rf /var/lib/apt/lists/*
+RUN set -eux; \
+    packages="curl libgl1 libglib2.0-0 libsm6 libxext6 libxrender1"; \
+    for attempt in 1 2 3; do \
+        rm -rf /var/lib/apt/lists/*; \
+        if apt-get -o Acquire::Retries=3 update \
+            && apt-get -o Acquire::Retries=3 install -y --no-install-recommends $packages; then \
+            break; \
+        fi; \
+        if [ "$attempt" -eq 3 ]; then exit 1; fi; \
+        sleep 5; \
+    done; \
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 

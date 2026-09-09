@@ -75,7 +75,9 @@ container.
 - baseline, pico e delta de RAM/VRAM;
 - CPU média e tempo acumulado do container;
 - utilização, memória, temperatura e potência de GPU;
-- energia de GPU e CPU quando NVML ou RAPL estão disponíveis;
+- utilização e memória de aceleradores não GPU quando o driver fornece dados;
+- energia de placa, GPU, acelerador e CPU quando há uma fonte compatível;
+- estado de limitação térmica exposto pelo kernel;
 - contagem de inferências e duração da mesma janela de recursos;
 - fontes de telemetria e escopo de cada métrica.
 
@@ -97,11 +99,18 @@ a fonte só enxerga o dispositivo inteiro.
 | `workload_processes` | telemetria atribuída aos PIDs da carga |
 | `visible_devices` | valor agregado dos dispositivos visíveis |
 | `device_components` | potência/energia dos componentes medidos |
+| `host_board` | potência/energia de entrada da placa inteira |
 | `unavailable` | fonte ausente ou sem suporte |
 | `legacy_*` | resultado antigo sem contrato de escopo atual |
 
 CPU usa 100% por núcleo ocupado. Uma carga usando seis núcleos integralmente
 pode registrar aproximadamente 600%.
+
+`accelerator_pct` cobre NPU, TPU, VPU e outros dispositivos não classificados
+como GPU. Em plataformas de memória unificada, RAM do sistema permanece em RAM
+e o campo de VRAM fica ausente. Quando existe potência de entrada da placa, ela
+é usada sozinha no total para não somar novamente CPU, GPU ou NPU contidas nessa
+leitura.
 
 ## Métricas Primárias
 

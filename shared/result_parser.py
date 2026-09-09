@@ -219,6 +219,14 @@ def normalize_resource_usage(resource: Any) -> dict:
         resource.get("avg_gpu_pct"),
         _series_average(samples, "gpu_pct"),
     )
+    peak_accelerator = first_number(
+        resource.get("peak_accelerator_util"),
+        _maximum(samples, "accelerator_pct"),
+    )
+    avg_accelerator = first_number(
+        resource.get("avg_accelerator_pct"),
+        _series_average(samples, "accelerator_pct"),
+    )
     avg_power = first_number(
         resource.get("avg_power_w"),
         resource.get("avg_gpu_power_w"),
@@ -273,6 +281,20 @@ def normalize_resource_usage(resource: Any) -> dict:
             resource.get("peak_device_gpu_util"),
             _maximum(samples, "gpu_device_pct", "gpu_pct"),
         ),
+        "peak_accelerator_util": peak_accelerator,
+        "avg_accelerator_pct": avg_accelerator,
+        "accelerator_scope": (scopes.get("accelerator_pct") or "visible_devices")
+        if peak_accelerator is not None or avg_accelerator is not None else "unavailable",
+        "peak_accelerator_memory_mb": first_number(
+            resource.get("peak_accelerator_memory_mb"),
+            _maximum(samples, "accelerator_memory_mb"),
+        ),
+        "accelerator_memory_scope": (
+            scopes.get("accelerator_memory_mb") or "visible_devices"
+        ) if first_number(
+            resource.get("peak_accelerator_memory_mb"),
+            _maximum(samples, "accelerator_memory_mb"),
+        ) is not None else "unavailable",
         "peak_vram_mb": peak_vram,
         "baseline_vram_mb": first_number(resource.get("baseline_vram_mb")),
         "peak_vram_delta_mb": first_number(resource.get("peak_vram_delta_mb")),
@@ -281,6 +303,8 @@ def normalize_resource_usage(resource: Any) -> dict:
             resource.get("peak_temp_c"),
             _maximum(samples, "temp_c", "gpu_temp_c", "cpu_temp_c"),
         ),
+        "thermal_throttling_observed": resource.get("thermal_throttling_observed") is True
+        or any(sample.get("thermal_throttling") is True for sample in samples),
         "avg_power_w": avg_power,
         "power_scope": (scopes.get("power_w") or "legacy_device")
         if avg_power is not None or total_energy is not None else "unavailable",
@@ -397,11 +421,17 @@ def normalize_result(data: Any, filename: Optional[str] = None) -> dict:
         "gpu_scope": resources["gpu_scope"],
         "peak_process_gpu_util": resources["peak_process_gpu_util"],
         "peak_device_gpu_util": resources["peak_device_gpu_util"],
+        "peak_accelerator_util": resources["peak_accelerator_util"],
+        "avg_accelerator_pct": resources["avg_accelerator_pct"],
+        "accelerator_scope": resources["accelerator_scope"],
+        "peak_accelerator_memory_mb": resources["peak_accelerator_memory_mb"],
+        "accelerator_memory_scope": resources["accelerator_memory_scope"],
         "peak_vram_mb": resources["peak_vram_mb"],
         "baseline_vram_mb": resources["baseline_vram_mb"],
         "peak_vram_delta_mb": resources["peak_vram_delta_mb"],
         "vram_scope": resources["vram_scope"],
         "peak_temp_c": resources["peak_temp_c"],
+        "thermal_throttling_observed": resources["thermal_throttling_observed"],
         "avg_power_w": resources["avg_power_w"],
         "power_scope": resources["power_scope"],
         "energy_j": resources["total_energy_j"],

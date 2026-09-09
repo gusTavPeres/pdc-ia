@@ -24,11 +24,13 @@ from urllib.parse import parse_qs, urlparse
 
 from shared.capabilities import CapabilityDetector, save_hardware_snapshot
 from shared.config_validation import validate_benchmark_config
+from shared.device_telemetry import load_host_telemetry
 from shared.result_parser import is_benchmark_result, load_result_file, normalize_result
 from shared.scorecard import compute_scorecard, load_hardware_config
 
 BASE = os.environ.get("PDC_BASE", os.path.dirname(os.path.abspath(__file__)))
 RESULTS_DIR = os.path.join(BASE, "results")
+HOST_TELEMETRY_PATH = os.path.join(BASE, "data", "telemetry", "host.json")
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
 CONTAINERS = {"vision": 8010, "slm": 8011, "audio": 8012}
@@ -611,6 +613,37 @@ def _http_post_multipart(url, fields=None, files=None, timeout=120):
         return json.loads(r.read())
 
 
+def host_telemetry_metrics():
+    payload = load_host_telemetry(HOST_TELEMETRY_PATH, max_age_sec=10)
+    return payload or {"error": "agente de telemetria indisponível"}
+
+
+def _host_gpu_metrics(error: str, detail=None):
+    telemetry = host_telemetry_metrics()
+    gpu = telemetry.get("gpu") if isinstance(telemetry.get("gpu"), dict) else {}
+    if gpu and any(gpu.get(key) is not None for key in (
+            "utilization_pct", "frequency_mhz", "temperature_c")):
+        return {
+            "name": gpu.get("name") or "GPU integrada",
+            "util_gpu_pct": gpu.get("utilization_pct"),
+            "util_mem_pct": None,
+            "mem_used_mb": None,
+            "mem_total_mb": None,
+            "temp_c": gpu.get("temperature_c"),
+            "power_w": gpu.get("power_w"),
+            "clock_mhz": gpu.get("frequency_mhz"),
+            "fan_pct": None,
+            "pstate": None,
+            "source": gpu.get("source") or "host_telemetry",
+            "scope": gpu.get("scope") or "visible_devices",
+            "detail": error,
+        }
+    result = {"error": error}
+    if detail:
+        result["detail"] = detail
+    return result
+
+
 def gpu_metrics():
     try:
         out = subprocess.check_output([
@@ -671,20 +704,17 @@ def gpu_metrics():
             "devices": devices,
         }
     except FileNotFoundError:
-        return {"error": "nvidia-smi não está instalado"}
+        return _host_gpu_metrics("nvidia-smi não está instalado")
     except subprocess.TimeoutExpired:
-        return {"error": "A consulta ao driver NVIDIA excedeu 3 segundos"}
+        return _host_gpu_metrics("A consulta ao driver NVIDIA excedeu 3 segundos")
     except subprocess.CalledProcessError as exc:
         detail = (exc.stderr or exc.stdout or "").strip().splitlines()
-        return {
-            "error": "Telemetria NVIDIA indisponível",
-            "detail": detail[0][:240] if detail else "nvidia-smi encerrou com erro",
-        }
+        return _host_gpu_metrics(
+            "Telemetria NVIDIA indisponível",
+            detail[0][:240] if detail else "nvidia-smi encerrou com erro",
+        )
     except Exception as exc:
-        return {
-            "error": "Falha ao consultar a GPU",
-            "detail": type(exc).__name__,
-        }
+        return _host_gpu_metrics("Falha ao consultar a GPU", type(exc).__name__)
 
 
 def system_metrics():
@@ -997,10 +1027,14 @@ def render_results_html(front_filter="all"):
         cpu = (fmt(r.get("avg_cpu_pct"), 0) + "%") \
             if r.get("avg_cpu_pct") is not None else "—"
         gpu = (fmt(r.get("peak_gpu_util"), 0) + "%") if r.get("peak_gpu_util") is not None else "—"
+        accelerator = (fmt(r.get("peak_accelerator_util"), 0) + "%") \
+            if r.get("peak_accelerator_util") is not None else "—"
         vram = (fmt(r.get("peak_vram_mb"), 0) + "MB") if r.get("peak_vram_mb") is not None else "—"
         vram_delta = (fmt(r.get("peak_vram_delta_mb"), 0) + "MB") \
             if r.get("peak_vram_delta_mb") is not None else "—"
         temp = (fmt(r.get("peak_temp_c"), 0) + "°C") if r.get("peak_temp_c") is not None else "—"
+        if r.get("thermal_throttling_observed"):
+            temp += " (lim.)"
         power = (fmt(r.get("avg_power_w"), 1) + "W") \
             if r.get("avg_power_w") is not None else "—"
         energy = (fmt(r.get("energy_j"), 1) + "J") \
@@ -1026,6 +1060,10 @@ def render_results_html(front_filter="all"):
             "visible_devices": "Pico de uso total nos dispositivos GPU visíveis",
             "legacy_unspecified": "Resultado legado: o escopo de GPU não foi registrado",
         }.get(r.get("gpu_scope"), "Pico de uso de GPU durante o teste")
+        accelerator_scope = {
+            "workload_processes": "Pico do acelerador atribuído aos processos desta carga",
+            "visible_devices": "Pico de utilização dos aceleradores não GPU visíveis",
+        }.get(r.get("accelerator_scope"), "Telemetria de acelerador indisponível")
         cpu_scope = {
             "container_cgroup": "Média de CPU do contêiner; 100% corresponde a um núcleo",
             "process_tree": "Média de CPU da árvore de processos; 100% corresponde a um núcleo",
@@ -1033,6 +1071,7 @@ def render_results_html(front_filter="all"):
         }.get(r.get("cpu_scope"), "Média de CPU durante a fase de recursos")
         power_scope = {
             "device_components": "Potência dos dispositivos GPU e pacotes de CPU medidos; não é exclusiva do contêiner",
+            "host_board": "Potência de entrada da placa; inclui todos os componentes do host",
             "legacy_device": "Resultado legado: potência medida no dispositivo",
         }.get(r.get("power_scope"), "Potência média dos componentes medidos")
         escaped_model = html.escape(model_full, quote=True)
@@ -1055,9 +1094,10 @@ def render_results_html(front_filter="all"):
             f'<div style="flex:0 0 62px" title="Pico menos baseline de RAM">{ram_delta}</div>'
             f'<div style="flex:0 0 62px" title="{html.escape(cpu_scope)}">{cpu}</div>'
             f'<div style="flex:0 0 52px" title="{html.escape(gpu_scope)}">{gpu}</div>'
+            f'<div style="flex:0 0 52px" title="{html.escape(accelerator_scope)}">{accelerator}</div>'
             f'<div style="flex:0 0 64px" title="{html.escape(vram_scope)}">{vram}</div>'
             f'<div style="flex:0 0 62px" title="Pico menos baseline de VRAM">{vram_delta}</div>'
-            f'<div style="flex:0 0 52px" title="Maior temperatura observada">{temp}</div>'
+            f'<div style="flex:0 0 52px" title="Maior temperatura observada; lim. indica limitação térmica ativa">{temp}</div>'
             f'<div style="flex:0 0 62px" title="{html.escape(power_scope)}">{power}</div>'
             f'<div style="flex:0 0 72px" title="{html.escape(str(r.get("energy_source") or "sem fonte"))}">{energy}</div>'
             f'<div style="flex:0 0 58px" title="Cobertura temporal da telemetria de energia">{coverage}</div>'
@@ -1351,6 +1391,7 @@ class Handler(BaseHTTPRequestHandler):
                 bs = {k: dict(v) for k, v in _benchmark_status.items()}
             data = {
                 "gpu": gpu_metrics(),
+                "telemetry": host_telemetry_metrics(),
                 "system": system_metrics(),
                 "containers": {k: container_health(v) for k, v in CONTAINERS.items()},
                 "results": all_results(),

@@ -6,13 +6,15 @@
 - `metrics_server.py`: API local e servidor do dashboard;
 - `web/dashboard.html`: interface sem etapa de build;
 - `shared/benchmark_suite.py`: fases comuns dos benchmarks;
-- `shared/metrics_collector.py`: cgroup, processos, NVML, térmica e RAPL;
+- `shared/metrics_collector.py`: cgroup, processos, NVML, RAPL e fontes do host;
+- `shared/device_telemetry.py`: sysfs, hwmon, devfreq e parser de `tegrastats`;
 - `shared/capabilities.py`: inventário e proveniência do hardware;
 - `shared/result_writer.py`: persistência atômica;
 - `shared/result_parser.py`: normalização de resultados atuais e legados;
 - `shared/scorecard.py`: performance, eficiência e custo;
 - `shared/model_loader.py`: download, hash e cache;
-- `vision/`, `slm/` e `audio/`: serviços FastAPI em containers.
+- `vision/`, `slm/` e `audio/`: serviços FastAPI em containers;
+- `telemetry/`: agente multi-arquitetura de sensores do host.
 
 ## Ambiente Local
 
@@ -48,6 +50,15 @@ PDC_IMAGE_VARIANT=cpu PDC_GPU_MODE=cpu \
 
 Repita para `slm` e `audio`. Para a variante NVIDIA, acrescente o arquivo
 `docker-compose.gpu.yml` da frente e use `PDC_IMAGE_VARIANT=gpu`.
+
+```bash
+PDC_TEGRASTATS_PATH=/dev/null \
+  docker compose -f telemetry/docker-compose.yml config --quiet
+```
+
+O Dockerfile do agente deve continuar exportável para `linux/amd64`,
+`linux/arm64` e `linux/arm/v7`. As frentes de IA têm como alvos CPU `amd64` e
+`arm64`.
 
 Testes geram caches locais, mas nenhum cache, modelo ou resultado deve entrar no
 Git. A suíte de testes é código do projeto e deve permanecer versionada.

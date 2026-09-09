@@ -1,10 +1,17 @@
 FROM python:3.11-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
-    ffmpeg \
-    libsndfile1 \
-    && rm -rf /var/lib/apt/lists/*
+RUN set -eux; \
+    packages="curl ffmpeg libsndfile1"; \
+    for attempt in 1 2 3; do \
+        rm -rf /var/lib/apt/lists/*; \
+        if apt-get -o Acquire::Retries=3 update \
+            && apt-get -o Acquire::Retries=3 install -y --no-install-recommends $packages; then \
+            break; \
+        fi; \
+        if [ "$attempt" -eq 3 ]; then exit 1; fi; \
+        sleep 5; \
+    done; \
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 

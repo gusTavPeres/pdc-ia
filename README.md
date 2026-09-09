@@ -17,11 +17,13 @@ arquivos é versionado.
   seriais;
 - métricas por container via cgroup, com fallback explícito quando a telemetria
   não está disponível;
+- agente multi-arquitetura para sensores Linux, devfreq, hwmon e Jetson
+  `tegrastats`;
 - score de desempenho e estimativas de custo quando a bancada está configurada.
 
 NPU, TPU, ROCm, OpenVINO e upload para microcontroladores ainda não possuem
-adaptadores de execução. Esses dispositivos podem aparecer no inventário, mas
-isso não significa que a carga foi executada neles. Consulte
+adaptadores de execução. A telemetria aceita provedores externos, mas a presença
+do dispositivo não significa que a carga foi executada nele. Consulte
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) para a matriz de suporte.
 
 ## Requisitos
@@ -34,6 +36,8 @@ isso não significa que a carga foi executada neles. Consulte
 O modo CPU não depende de uma GPU NVIDIA. Sem telemetria compatível, VRAM,
 potência e temperatura permanecem ausentes em vez de serem estimadas.
 Piper TTS executa em CPU também na variante GPU desta versão.
+Em Linux ARM64, use a variante CPU; a variante CUDA atual é destinada a NVIDIA
+dGPU em `x86_64`.
 
 ## Primeiro Uso
 
@@ -125,6 +129,8 @@ Cada execução gera um único JSON com `run_id`. O resultado separa:
 O CLI atualiza `data/hardware/host.json` antes de subir containers e antes de
 executar benchmarks. Isso evita registrar o filesystem `overlay` como se fosse
 o SSD ou eMMC físico.
+O container `pdc-telemetry` é iniciado junto das frentes e publica sensores do
+host em `data/telemetry/host.json`.
 
 Contrato dos campos: [`docs/RESULTS.md`](docs/RESULTS.md). Regras de comparação:
 [`docs/METHODOLOGY.md`](docs/METHODOLOGY.md).
@@ -157,6 +163,8 @@ PDC_SHM_SIZE=1g ./pdc up vision --cpu
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md): componentes, fluxo e suporte
   de hardware;
+- [`docs/ARM.md`](docs/ARM.md): Raspberry Pi, Jetson, SBCs e provedores de
+  acelerador;
 - [`docs/RESULTS.md`](docs/RESULTS.md): esquema dos resultados e escopo das
   métricas;
 - [`docs/METHODOLOGY.md`](docs/METHODOLOGY.md): regras de medição e comparação;
@@ -165,8 +173,9 @@ PDC_SHM_SIZE=1g ./pdc up vision --cpu
 
 ## Limitações Conhecidas
 
-- ARM64 é um alvo da imagem CPU, mas cada placa precisa ser validada porque a
-  disponibilidade de wheels varia por runtime e distribuição;
+- as imagens CPU possuem dependências ARM64, mas cada família de placa ainda
+  deve ser validada nativamente;
+- Jetson exige uma variante de execução alinhada ao JetPack/L4T para usar CUDA;
 - energia de CPU depende de acesso a RAPL/powercap;
 - utilização e potência de GPU podem representar o dispositivo inteiro quando
   o driver não oferece atribuição por processo;
