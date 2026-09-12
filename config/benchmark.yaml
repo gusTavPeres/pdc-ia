@@ -23,6 +23,18 @@ profiles:
     resource_usage: { duration_sec: 120, interval_sec: 1 }
     sustained_load: { duration_min: 10 }
     memory_bandwidth: { enabled: true, patterns: ["sequential","random"], block_sizes_kb: [4,16,64,256,1024,4096,16384] }
+  soak:
+    throughput: { duration_sec: 60, warmup: 10 }
+    latency: { samples: 100, percentiles: [50, 90, 95, 99, 99.9] }
+    resource_usage: { duration_sec: 60, interval_sec: 1 }
+    sustained_load: { duration_min: 30 }
+    memory_bandwidth: { enabled: true, patterns: ["sequential","random"], block_sizes_kb: [4,64,1024,16384] }
+  torture:
+    throughput: { duration_sec: 120, warmup: 10 }
+    latency: { samples: 200, percentiles: [50, 90, 95, 99, 99.9] }
+    resource_usage: { duration_sec: 120, interval_sec: 1 }
+    sustained_load: { duration_min: 60 }
+    memory_bandwidth: { enabled: true, patterns: ["sequential","random"], block_sizes_kb: [4,16,64,256,1024,4096,16384] }
 default_profile: "quick"
 output:
   format: "json"
