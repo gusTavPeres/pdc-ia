@@ -42,10 +42,14 @@ def _json_document_safe(value: Any) -> bool:
 
 
 def read_text(path: str) -> Optional[str]:
+    # Ponto único de toda leitura de sysfs (thermal, hwmon, devfreq, cpufreq).
+    # Sensores como os thermal_zone do Jetson retornam EAGAIN e o codec pode
+    # levantar TypeError, não só OSError. Um coletor de telemetria nunca pode
+    # derrubar o benchmark: qualquer falha de leitura vira campo ausente.
     try:
         with open(path, encoding="utf-8", errors="replace") as handle:
             return handle.read().replace("\x00", " ").strip()
-    except (OSError, ValueError):
+    except Exception:
         return None
 
 

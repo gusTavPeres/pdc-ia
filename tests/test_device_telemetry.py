@@ -5,6 +5,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 from unittest.mock import patch
 
 from shared.device_telemetry import (
@@ -300,6 +301,39 @@ class TelemetryDocumentTests(unittest.TestCase):
         self.assertEqual(summary["avg_power_w"], 10)
         self.assertEqual(summary["scopes"]["power_w"], "host_board")
         self.assertEqual(summary["power_sources"], ["sensor:input"])
+
+
+
+class ReadTextResilienteTest(unittest.TestCase):
+    """read_text é o choke point de todo sysfs: nunca pode propagar exceção.
+
+    Um thermal_zone do Jetson que retorna EAGAIN derrubava o agente inteiro
+    (TypeError do codec escapava do except). Aqui garantimos que qualquer
+    falha de leitura vira None (campo ausente), não crash.
+    """
+
+    def test_arquivo_inexistente_vira_none(self):
+        from shared.device_telemetry import read_text
+        self.assertIsNone(read_text("/sys/nao/existe/temp"))
+
+    def test_leitura_que_levanta_erro_vira_none(self):
+        import builtins
+
+        import shared.device_telemetry as dt
+        real_open = builtins.open
+
+        class Explode:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self): raise TypeError("can't concat NoneType to bytes")
+
+        def fake_open(path, *a, **k):
+            if "sensor_eagain" in str(path):
+                return Explode()
+            return real_open(path, *a, **k)
+
+        with mock.patch.object(builtins, "open", fake_open):
+            self.assertIsNone(dt.read_text("/sys/sensor_eagain/temp"))
 
 
 if __name__ == "__main__":

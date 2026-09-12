@@ -473,6 +473,26 @@ def cmd_status(args):
         raise SystemExit(1)
 
 
+def _wait_healthy(port, timeout=300):
+    """Espera a frente responder /health. Retorna True se ficou pronta a tempo.
+
+    O container tem start_period longo (carrega modelo). Sem esperar, o
+    benchmark bate numa porta que ainda recusa conexao e falha sem motivo.
+    """
+    import urllib.request
+    deadline = time.time() + timeout
+    url = f"http://localhost:{port}/health"
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=5) as r:
+                if r.status == 200:
+                    return True
+        except Exception:
+            pass
+        time.sleep(3)
+    return False
+
+
 def cmd_benchmark(args):
     """Executa benchmark em um ou todos os containers."""
     import urllib.error
@@ -500,6 +520,11 @@ def cmd_benchmark(args):
         port = FRONTS[front]["port"]
         mode_label = f", modo: {mode}" if front == "audio" and mode else ""
         info(f"Benchmark {front} (perfil: {profile}{mode_label})...")
+
+        if not _wait_healthy(port):
+            err(f"{front} não ficou saudável a tempo na porta {port}")
+            failures += 1
+            continue
 
         try:
             request_data = {"profile": profile}
@@ -802,7 +827,7 @@ p kernel "$(uname -r)"
 p os "$(. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME" || echo desconhecido)"
 if command -v python3 >/dev/null 2>&1; then
   p python "$(python3 -c 'import sys;print("%d.%d"%sys.version_info[:2])' 2>/dev/null || echo erro)"
-  python3 -c 'import venv' 2>/dev/null && p venv sim || p venv NAO
+  python3 -c 'import venv, ensurepip' 2>/dev/null && p venv sim || p venv NAO
 else
   p python AUSENTE; p venv NAO
 fi
@@ -910,7 +935,7 @@ def _remote_blockers(facts, modo="git"):
         elif versao < (3, 10):
             blockers.append(f"Python {facts['python']} é antigo demais; o projeto pede 3.10+")
     if facts.get("venv") != "sim":
-        blockers.append("módulo venv ausente (apt install python3-venv)")
+        blockers.append("venv/ensurepip ausente (apt install python3-venv; no Jetson python3.10-venv)")
     arch = facts.get("arch", "")
     if arch in {"armv7l", "armv6l"}:
         blockers.append(
@@ -1087,10 +1112,12 @@ def _remote_run(args):
 
     modo = " --cpu" if _remote_cpu_only(facts) else ""
     front = args.front
+    # status fica fora do encadeamento: ele retorna != 0 enquanto os containers
+    # ainda aquecem (start_period), o que mataria a cadeia antes do benchmark.
+    # O benchmark agora espera /health por conta própria.
     remote_cmds = (
         f"./pdc build {front}{modo} && "
         f"./pdc up {front}{modo} && "
-        f"./pdc status && "
         f"./pdc benchmark {front} --profile {args.profile}"
     )
     launcher = _remote_launcher(remote_cmds)
