@@ -1210,8 +1210,9 @@ def _remote_logs(args):
 
 
 def _remote_fetch(args):
-    """Traz os resultados do device para results/remote/<device>/."""
-    destino = BASE_DIR / "results" / "remote" / args.device.replace("/", "_")
+    """Traz os resultados do device para o destino local (--out)."""
+    base = Path(os.path.expanduser(args.out)) if getattr(args, "out", None) else BASE_DIR / "results" / "remote"
+    destino = base / args.device.replace("/", "_")
     destino.mkdir(parents=True, exist_ok=True)
     info(f"Trazendo resultados para {destino.relative_to(BASE_DIR)}/ ...")
     result = subprocess.run([
@@ -1223,7 +1224,7 @@ def _remote_fetch(args):
         warn("Nenhum resultado trazido (o device pode não ter gerado nenhum ainda)")
         return
     arquivos = sorted(destino.rglob("*.json"))
-    ok(f"{len(arquivos)} arquivo(s) em {destino.relative_to(BASE_DIR)}/")
+    ok(f"{len(arquivos)} arquivo(s) em {destino}")
 
 
 def main():
@@ -1332,6 +1333,9 @@ def main():
         p_sub.add_argument(
             "--path", default=REMOTE_DEFAULT_PATH,
             help=f"Caminho no device (padrao: {REMOTE_DEFAULT_PATH})")
+        if nome in ("run", "fetch"):
+            p_sub.add_argument(
+                "--out", help="Pasta local para os resultados (padrao: results/remote/)")
         if nome == "deploy":
             p_sub.add_argument(
                 "--no-models", action="store_true",
