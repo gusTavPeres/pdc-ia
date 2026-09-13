@@ -34,10 +34,13 @@ from app.inference_tts import (
 from shared.audio_metrics import word_error_rate
 from shared.benchmark_suite import run_full_benchmark
 from shared.capabilities import CapabilityDetector
+from shared.cpu_config import apply_openmp_env
 from shared.methodology import result_quality, summarize_errors
 from shared.metrics_collector import runtime_execution_info
 from shared.result_writer import save_result
 from shared.scorecard import compute_scorecard, load_hardware_config
+
+apply_openmp_env()  # fixa OMP/OpenBLAS nos nucleos antes de carregar modelos
 
 
 class TTSRequest(BaseModel):

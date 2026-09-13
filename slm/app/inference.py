@@ -10,6 +10,7 @@ from typing import Optional
 
 sys.path.insert(0, "/app")
 
+from shared.cpu_config import cpu_threads as _cpu_threads
 from shared.model_loader import get_or_download
 
 # Estado global do modelo carregado
@@ -106,6 +107,7 @@ def load_model(config: dict, dataset_config: Optional[dict] = None) -> None:
                 model_path=_model_path,
                 n_ctx=context_length,
                 n_gpu_layers=desired_gpu_layers,
+                n_threads=_cpu_threads(),
                 verbose=False,
             )
             _n_gpu_layers = desired_gpu_layers
@@ -118,6 +120,7 @@ def load_model(config: dict, dataset_config: Optional[dict] = None) -> None:
         model_path=_model_path,
         n_ctx=context_length,
         n_gpu_layers=0,
+        n_threads=_cpu_threads(),
         verbose=False,
     )
     _n_gpu_layers = 0

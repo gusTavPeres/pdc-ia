@@ -18,8 +18,11 @@ import yaml
 from app.inference import get_benchmark_fn, get_device, get_model_name, load_model, predict
 from shared.benchmark_suite import run_full_benchmark
 from shared.capabilities import CapabilityDetector
+from shared.cpu_config import apply_openmp_env
 from shared.metrics_collector import runtime_execution_info
 from shared.result_writer import save_result
+
+apply_openmp_env()  # fixa OMP/OpenBLAS nos nucleos antes de carregar modelos
 
 
 class BenchmarkRequest(BaseModel):

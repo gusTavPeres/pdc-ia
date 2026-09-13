@@ -7,6 +7,8 @@ import threading
 import time
 from functools import wraps
 
+from shared.cpu_config import cpu_threads as _cpu_threads
+
 sys.path.insert(0, "/app")
 
 
@@ -52,6 +54,7 @@ def load_asr(config: dict) -> None:
             model_id,
             device=device,
             compute_type=compute_type,
+            cpu_threads=_cpu_threads(),
             download_root="/app/data/models",
         )
     except Exception as exc:
@@ -63,6 +66,7 @@ def load_asr(config: dict) -> None:
                 model_id,
                 device="cpu",
                 compute_type="int8",
+                cpu_threads=_cpu_threads(),
                 download_root="/app/data/models",
             )
         else:

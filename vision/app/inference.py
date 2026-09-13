@@ -9,6 +9,7 @@ import numpy as np
 
 sys.path.insert(0, "/app")
 
+from shared.cpu_config import cpu_threads as _cpu_threads
 from shared.dataset_loader import load_dataset
 from shared.model_loader import get_or_download
 
@@ -29,6 +30,7 @@ def load_model(config: dict) -> None:
         device = "cpu"
         try:
             import torch
+            torch.set_num_threads(_cpu_threads())  # usa todos os nucleos, nao ~metade
             if torch.cuda.is_available() and os.environ.get("PDC_GPU_MODE") != "cpu":
                 device = "cuda"
                 print(f"[vision] GPU detectada: {torch.cuda.get_device_name(0)}")
