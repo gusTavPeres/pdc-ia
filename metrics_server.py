@@ -1047,8 +1047,18 @@ def render_results_html(front_filter="all"):
         ram = (fmt(r.get("peak_ram_mb"), 0) + "MB") if r.get("peak_ram_mb") is not None else "—"
         ram_delta = (fmt(r.get("peak_ram_delta_mb"), 0) + "MB") \
             if r.get("peak_ram_delta_mb") is not None else "—"
-        cpu = (fmt(r.get("avg_cpu_pct"), 0) + "%") \
-            if r.get("avg_cpu_pct") is not None else "—"
+        # CPU normalizada 0-100 (fração do sistema); nunca a soma de núcleos do
+        # cgroup (que ia a 600% num hexa-core). Mostra "N cores" como detalhe.
+        host_cpu = r.get("avg_host_cpu_pct")
+        cores_used = r.get("cpu_cores_used")
+        if host_cpu is not None:
+            cpu = fmt(host_cpu, 0) + "%"
+            if cores_used is not None:
+                cpu += f" ({fmt(cores_used, 1)}c)"
+        elif cores_used is not None:
+            cpu = fmt(cores_used, 1) + " cores"
+        else:
+            cpu = "—"
         gpu = (fmt(r.get("peak_gpu_util"), 0) + "%") if r.get("peak_gpu_util") is not None else "—"
         accelerator = (fmt(r.get("peak_accelerator_util"), 0) + "%") \
             if r.get("peak_accelerator_util") is not None else "—"

@@ -39,3 +39,25 @@ class CpuThreadsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ResultCpuNormalizationTest(unittest.TestCase):
+    """CPU do resultado deve expor a versão normalizada 0-100, não só cgroup."""
+
+    def test_expoe_host_cpu_e_cores(self):
+        from shared.result_parser import normalize_result
+        data = {
+            "front": "vision", "profile": "quick",
+            "benchmark_results": {
+                "resource_usage": {
+                    "schema_version": "resource-2026.08-v1",
+                    "avg_cpu_pct": 590.0,          # cgroup: 5.9 nucleos
+                    "avg_host_cpu_pct": 98.3,      # normalizado 0-100
+                    "timeseries": [],
+                },
+            },
+        }
+        r = normalize_result(data)
+        self.assertAlmostEqual(r["avg_host_cpu_pct"], 98.3)
+        self.assertAlmostEqual(r["cpu_cores_used"], 5.9)  # 590/100
+        self.assertLessEqual(r["avg_host_cpu_pct"], 100.0)  # nunca 600

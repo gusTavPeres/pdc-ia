@@ -421,7 +421,7 @@ canvas{max-height:180px}
           <div style="flex:0 0 58px" class="metric-help" title="Desvio padrão da latência: dispersão entre as amostras do teste de latência.">σ ms</div>
           <div style="flex:0 0 68px" class="metric-help" title="Pico do working set do container. Sem cgroup disponível, usa o RSS da árvore de processos. Resultados antigos exibem o escopo no próprio valor.">RAM</div>
           <div style="flex:0 0 62px" class="metric-help" title="Diferença entre o pico de RAM e o baseline coletado antes da fase de uso de recursos.">Δ RAM</div>
-          <div style="flex:0 0 62px" class="metric-help" title="Média de CPU na fase de recursos. Cada 100% corresponde a um núcleo ocupado; o valor pode superar 100% em cargas paralelas.">CPU%</div>
+          <div style="flex:0 0 62px" class="metric-help" title="Uso médio de CPU do sistema (0-100%) durante a fase de recursos. Entre parênteses, núcleos ocupados (ex.: 5.9c num hexa-core).">CPU%</div>
           <div style="flex:0 0 52px" class="metric-help" title="Pico de GPU dos processos da carga quando o NVML oferece telemetria por PID; caso contrário, usa o pico dos dispositivos visíveis.">GPU%</div>
           <div style="flex:0 0 52px" class="metric-help" title="Pico de utilização de NPU, TPU, VPU ou outro acelerador não GPU. Sem atribuição por processo, representa os dispositivos visíveis.">Acel.%</div>
           <div style="flex:0 0 64px" class="metric-help" title="Pico de VRAM dos processos da carga quando a API do dispositivo permite essa atribuição; caso contrário, usa a VRAM total visível.">VRAM</div>
@@ -1594,7 +1594,7 @@ function doCompare() {
     ['Latência p99 (ms)', a.p99_ms, b.p99_ms, false],
     ['Desvio padrão (ms)', a.std_ms, b.std_ms, false],
     ['RAM Pico (MB)', a.peak_ram_mb, b.peak_ram_mb, false],
-    ['CPU médio (%)', a.avg_cpu_pct, b.avg_cpu_pct, null],
+    ['CPU médio do sistema (%)', a.avg_host_cpu_pct ?? a.avg_cpu_pct, b.avg_host_cpu_pct ?? b.avg_cpu_pct, null],
     ['GPU Pico (%)', a.peak_gpu_util, b.peak_gpu_util, null],
     ['Acelerador Pico (%)', a.peak_accelerator_util, b.peak_accelerator_util, null],
     ['VRAM Pico (MB)', a.peak_vram_mb, b.peak_vram_mb, false],

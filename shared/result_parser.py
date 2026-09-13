@@ -260,6 +260,14 @@ def normalize_resource_usage(resource: Any) -> dict:
     if energy_coverage is not None:
         energy_coverage = min(1.0, max(0.0, energy_coverage))
 
+    # CPU normalizada 0-100 (fração do sistema) além da soma de núcleos do
+    # cgroup (avg_cpu_pct, que vai a 600% num hexa-core). E os núcleos ocupados.
+    avg_host_cpu = first_number(
+        resource.get("avg_host_cpu_pct"),
+        _series_interval_average(samples, "host_cpu_pct"),
+    )
+    cpu_cores_used = round(avg_cpu / 100.0, 2) if avg_cpu is not None else None
+
     return {
         "schema_version": schema_version,
         "timeseries": samples,
@@ -268,6 +276,8 @@ def normalize_resource_usage(resource: Any) -> dict:
         "peak_ram_delta_mb": first_number(resource.get("peak_ram_delta_mb")),
         "ram_scope": ram_scope,
         "avg_cpu_pct": avg_cpu,
+        "avg_host_cpu_pct": avg_host_cpu,
+        "cpu_cores_used": cpu_cores_used,
         "cpu_scope": cpu_scope,
         "peak_gpu_util": peak_gpu,
         "avg_gpu_pct": avg_gpu,
@@ -415,6 +425,8 @@ def normalize_result(data: Any, filename: Optional[str] = None) -> dict:
         "peak_ram_delta_mb": resources["peak_ram_delta_mb"],
         "ram_scope": resources["ram_scope"],
         "avg_cpu_pct": resources["avg_cpu_pct"],
+        "avg_host_cpu_pct": resources.get("avg_host_cpu_pct"),
+        "cpu_cores_used": resources.get("cpu_cores_used"),
         "cpu_scope": resources["cpu_scope"],
         "peak_gpu_util": resources["peak_gpu_util"],
         "avg_gpu_pct": resources["avg_gpu_pct"],
