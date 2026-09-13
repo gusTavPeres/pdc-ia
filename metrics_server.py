@@ -615,7 +615,22 @@ def _http_post_multipart(url, fields=None, files=None, timeout=120):
 
 def host_telemetry_metrics():
     payload = load_host_telemetry(HOST_TELEMETRY_PATH, max_age_sec=10)
-    return payload or {"error": "agente de telemetria indisponível"}
+    if not payload:
+        return {"error": "agente de telemetria indisponível"}
+    # potência da placa (board_w) que o dashboard consome: trilho de entrada
+    # VDD_IN no Jetson tem prioridade; senão soma os trilhos/sensores.
+    power = payload.get("power") if isinstance(payload.get("power"), dict) else None
+    if power is not None and power.get("board_w") is None:
+        rails = power.get("rails") or []
+        vin = next((r.get("power_w") for r in rails
+                    if str(r.get("label", "")).upper().startswith("VDD_IN")
+                    and isinstance(r.get("power_w"), (int, float))), None)
+        if vin is None:
+            watts = [r.get("power_w") for r in rails
+                     if isinstance(r.get("power_w"), (int, float))]
+            vin = round(sum(watts), 3) if watts else None
+        power["board_w"] = vin
+    return payload
 
 
 def _host_gpu_metrics(error: str, detail=None):
@@ -689,6 +704,14 @@ def gpu_metrics():
                 return None
             return sum(values) if mode == "sum" else max(values)
 
+        # No Jetson o nvidia-smi lista o device mas devolve tudo [N/A]: os dados
+        # reais (util, temp, potência, clock) vêm do tegrastats. Se o nvidia-smi
+        # não trouxe métrica nenhuma útil, usa a telemetria do agente.
+        if all(aggregate(k) is None for k in
+               ("util_gpu_pct", "temp_c", "power_w", "clock_mhz")):
+            host = _host_gpu_metrics("nvidia-smi sem métricas (Jetson usa tegrastats)")
+            if "error" not in host:
+                return host
         return {
             "name": " / ".join(device["name"] for device in devices),
             "util_gpu_pct": aggregate("util_gpu_pct"),
