@@ -122,7 +122,13 @@ canvas{max-height:180px}
 .vision-overlay{position:absolute;inset:0;pointer-events:none}
 .vision-box{position:absolute;border:2px solid var(--accent2);background:rgba(20,184,166,.14);border-radius:4px;overflow:hidden}
 .vision-box span{position:absolute;left:0;top:0;background:rgba(10,12,16,.9);color:#fff;font-size:.68rem;padding:2px 6px}
-.metric-help{cursor:help;border-bottom:1px dotted #737373}
+.metric-help{cursor:help;border-bottom:1px dotted #737373;position:relative}
+/* tooltip proprio (o title nativo e lento/instavel): mostra data-tip na hora */
+.metric-help[data-tip]:hover::after{content:attr(data-tip);position:absolute;left:0;top:calc(100% + 6px);z-index:50;width:max-content;max-width:280px;white-space:normal;background:#0a0a0a;color:#e7e7e7;border:1px solid #3a3a3a;border-radius:6px;padding:7px 9px;font-size:.72rem;font-weight:400;line-height:1.35;text-transform:none;letter-spacing:normal;box-shadow:0 4px 16px rgba(0,0,0,.5)}
+.res-head{display:flex;padding:0 0 6px 0;border-bottom:1px solid #303030;font-size:.68rem;font-weight:700;color:#8a8a8a;text-transform:uppercase;letter-spacing:.05em}
+.res-h{white-space:nowrap;overflow:visible}
+.res-row{display:flex;padding:5px 0;border-bottom:1px solid #242424;font-size:.77rem;color:#e7e7e7;align-items:center}
+.res-row:hover{background:#1c1c1c}
 .table-wrap{width:100%;overflow-x:auto}
 .results-charts{display:grid;grid-template-columns:1fr 1fr;gap:14px}
 .runtime-input{width:92px;min-width:72px}
@@ -405,34 +411,9 @@ canvas{max-height:180px}
         <button class="btn sm" onclick="exportResults()">Exportar JSON</button>
       </div>
     </div>
-    <div style="font-size:.74rem;color:var(--dim);margin:-4px 0 10px 0">Passe o mouse sobre os títulos das métricas para ver definição e método de cálculo.</div>
+    <div style="font-size:.72rem;color:var(--dim);margin:0 0 8px 0">As colunas se adaptam ao device: só aparecem as métricas com dado (o Raspberry Pi omite GPU/VRAM/potência; o Jetson mostra potência e temperatura). Passe o mouse no título de cada coluna para a definição.</div>
     <div style="overflow-x:auto;overflow-y:auto;max-height:60vh">
-      <div style="min-width:1594px">
-        <div style="display:flex;padding:0 0 6px 0;border-bottom:1px solid #303030;font-size:.68rem;font-weight:700;color:#737373;text-transform:uppercase;letter-spacing:.05em">
-          <div style="flex:0 0 88px">Data/Hora</div>
-          <div style="flex:0 0 56px">Front</div>
-          <div style="flex:1;min-width:150px">Modelo</div>
-          <div style="flex:0 0 62px">Perfil</div>
-          <div style="flex:0 0 88px" class="metric-help" title="Métrica principal da carga: frames/s em visão, tokens/s em SLM e velocidade relativa ao tempo real em áudio. É calculada a partir do total produzido dividido pela duração da fase.">Primária</div>
-          <div style="flex:0 0 82px" class="metric-help" title="Throughput: número de inferências concluídas por segundo durante a janela do teste de throughput, desconsiderando o warmup.">ops/s</div>
-          <div style="flex:0 0 58px" class="metric-help" title="Latência p50: mediana das amostras individuais coletadas no teste de latência.">p50ms</div>
-          <div style="flex:0 0 58px" class="metric-help" title="Latência p95: percentil 95 das amostras individuais do teste de latência.">p95ms</div>
-          <div style="flex:0 0 58px" class="metric-help" title="Latência p99: percentil 99 das amostras individuais do teste de latência.">p99ms</div>
-          <div style="flex:0 0 58px" class="metric-help" title="Desvio padrão da latência: dispersão entre as amostras do teste de latência.">σ ms</div>
-          <div style="flex:0 0 68px" class="metric-help" title="Pico do working set do container. Sem cgroup disponível, usa o RSS da árvore de processos. Resultados antigos exibem o escopo no próprio valor.">RAM</div>
-          <div style="flex:0 0 62px" class="metric-help" title="Diferença entre o pico de RAM e o baseline coletado antes da fase de uso de recursos.">Δ RAM</div>
-          <div style="flex:0 0 62px" class="metric-help" title="Uso médio de CPU do sistema (0-100%) durante a fase de recursos. Entre parênteses, núcleos ocupados (ex.: 5.9c num hexa-core).">CPU%</div>
-          <div style="flex:0 0 52px" class="metric-help" title="Pico de GPU dos processos da carga quando o NVML oferece telemetria por PID; caso contrário, usa o pico dos dispositivos visíveis.">GPU%</div>
-          <div style="flex:0 0 52px" class="metric-help" title="Pico de utilização de NPU, TPU, VPU ou outro acelerador não GPU. Sem atribuição por processo, representa os dispositivos visíveis.">Acel.%</div>
-          <div style="flex:0 0 64px" class="metric-help" title="Pico de VRAM dos processos da carga quando a API do dispositivo permite essa atribuição; caso contrário, usa a VRAM total visível.">VRAM</div>
-          <div style="flex:0 0 62px" class="metric-help" title="Diferença entre o pico de VRAM e o baseline da fase de uso de recursos, no mesmo escopo da coluna VRAM.">Δ VRAM</div>
-          <div style="flex:0 0 52px" class="metric-help" title="Maior temperatura observada durante o teste de uso de recursos, normalmente da GPU quando disponível.">Temp</div>
-          <div style="flex:0 0 62px" class="metric-help" title="Potência média. Quando existe sensor de entrada da placa ele prevalece; caso contrário, soma apenas os componentes com telemetria disponível.">Potência</div>
-          <div style="flex:0 0 72px" class="metric-help" title="Energia dos componentes medidos na fase de uso de recursos. O valor é integrado no tempo ou lido do contador RAPL.">Energia</div>
-          <div style="flex:0 0 58px" class="metric-help" title="Fração da duração da fase coberta pela telemetria de energia. Valores abaixo de 90% geram aviso e estimativa no scorecard.">Cob.</div>
-          <div style="flex:0 0 72px" class="metric-help" title="Energia por unidade principal: frame em visão, token em SLM ou segundo de áudio processado.">J/unid.</div>
-          <div style="flex:0 0 82px" class="metric-help" title="Custo estimado por mil unidades principais, somando amortização do hardware e eletricidade configuradas na aba Hardware.">Custo/1k</div>
-        </div>
+      <div style="min-width:fit-content">
         <div id="res-body"></div>
       </div>
     </div>

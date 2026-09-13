@@ -1007,7 +1007,13 @@ def _format_result_timestamp(value):
 
 
 def render_results_html(front_filter="all"):
-    """Renderiza as linhas de resultados exibidas no dashboard."""
+    """Renderiza a tabela de resultados (cabeçalho + linhas).
+
+    Orientada a colunas: cada métrica se descreve (rótulo + tooltip) e só é
+    exibida se ao menos um resultado tiver valor. Assim cada device mostra
+    apenas o que faz sentido nele — o Raspberry Pi some com GPU/VRAM/potência,
+    o Jetson mantém potência e temperatura do tegrastats.
+    """
     results = all_results()
     if front_filter and front_filter != "all":
         results = [r for r in results if r.get("front") == front_filter]
@@ -1023,123 +1029,124 @@ def render_results_html(front_filter="all"):
         except Exception:
             return str(v)
 
-    rows = []
-    for r in results:
-        raw_ts = r.get("timestamp", "")
-        ts = _format_result_timestamp(raw_ts)
-        front = str(r.get("front") or "?")
-        model_full = str(r.get("model") or "?")
-        model = model_full.replace(".gguf", "").replace(".gemma4", "")[:32]
-        profile = str(r.get("profile") or "?")
-        primary = r.get("primary_metric") if isinstance(r.get("primary_metric"), dict) else {}
-        primary_value = primary.get("value")
-        primary_text = (
-            f"{fmt(primary_value, 2)} {str(primary.get('unit') or '')}".strip()
-            if primary_value is not None else "—"
-        )
-        primary_title = str(primary.get("name") or "métrica primária")
-        fc = "#93c5fd" if front == "vision" else "#22c55e" if front == "slm" else "#f59e0b"
-        thr = fmt(r.get("throughput_ops"), 2)
-        p50 = fmt(r.get("p50_ms"))
-        p95 = fmt(r.get("p95_ms"))
-        p99 = fmt(r.get("p99_ms"))
-        std = fmt(r.get("std_ms"))
-        ram = (fmt(r.get("peak_ram_mb"), 0) + "MB") if r.get("peak_ram_mb") is not None else "—"
-        ram_delta = (fmt(r.get("peak_ram_delta_mb"), 0) + "MB") \
-            if r.get("peak_ram_delta_mb") is not None else "—"
-        # CPU normalizada 0-100 (fração do sistema); nunca a soma de núcleos do
-        # cgroup (que ia a 600% num hexa-core). Mostra "N cores" como detalhe.
+    def cell_cpu(r):
         host_cpu = r.get("avg_host_cpu_pct")
-        cores_used = r.get("cpu_cores_used")
+        cores = r.get("cpu_cores_used")
         if host_cpu is not None:
-            cpu = fmt(host_cpu, 0) + "%"
-            if cores_used is not None:
-                cpu += f" ({fmt(cores_used, 1)}c)"
-        elif cores_used is not None:
-            cpu = fmt(cores_used, 1) + " cores"
-        else:
-            cpu = "—"
-        gpu = (fmt(r.get("peak_gpu_util"), 0) + "%") if r.get("peak_gpu_util") is not None else "—"
-        accelerator = (fmt(r.get("peak_accelerator_util"), 0) + "%") \
-            if r.get("peak_accelerator_util") is not None else "—"
-        vram = (fmt(r.get("peak_vram_mb"), 0) + "MB") if r.get("peak_vram_mb") is not None else "—"
-        vram_delta = (fmt(r.get("peak_vram_delta_mb"), 0) + "MB") \
-            if r.get("peak_vram_delta_mb") is not None else "—"
-        temp = (fmt(r.get("peak_temp_c"), 0) + "°C") if r.get("peak_temp_c") is not None else "—"
-        if r.get("thermal_throttling_observed"):
-            temp += " (lim.)"
-        power = (fmt(r.get("avg_power_w"), 1) + "W") \
-            if r.get("avg_power_w") is not None else "—"
-        energy = (fmt(r.get("energy_j"), 1) + "J") \
-            if r.get("energy_j") is not None else "—"
-        coverage = (fmt(float(r["energy_coverage_ratio"]) * 100.0, 0) + "%") \
-            if r.get("energy_coverage_ratio") is not None else "—"
-        energy_per_unit = fmt(r.get("energy_per_primary_unit_j"), 5)
-        currency = str(r.get("cost_currency") or "")
-        cost = (f"{currency} {fmt(r.get('cost_per_1k'), 6)}".strip()
-                if r.get("cost_per_1k") is not None else "—")
-        ram_scope = {
-            "container_cgroup_working_set": "Pico do working set de memória do container",
-            "process_tree_rss": "Pico de RSS da árvore de processos da carga",
-            "legacy_unspecified": "Resultado legado: o escopo da RAM não foi registrado",
-        }.get(r.get("ram_scope"), "Pico de RAM da carga durante o teste")
-        vram_scope = {
-            "workload_processes": "Pico de VRAM dos processos desta carga",
-            "visible_devices": "Pico de VRAM total nos dispositivos visíveis",
-            "legacy_device": "Resultado legado: VRAM total do dispositivo",
-        }.get(r.get("vram_scope"), "Pico de VRAM durante o teste")
-        gpu_scope = {
-            "workload_processes": "Pico de uso de GPU atribuído aos processos desta carga",
-            "visible_devices": "Pico de uso total nos dispositivos GPU visíveis",
-            "legacy_unspecified": "Resultado legado: o escopo de GPU não foi registrado",
-        }.get(r.get("gpu_scope"), "Pico de uso de GPU durante o teste")
-        accelerator_scope = {
-            "workload_processes": "Pico do acelerador atribuído aos processos desta carga",
-            "visible_devices": "Pico de utilização dos aceleradores não GPU visíveis",
-        }.get(r.get("accelerator_scope"), "Telemetria de acelerador indisponível")
-        cpu_scope = {
-            "container_cgroup": "Média de CPU do contêiner; 100% corresponde a um núcleo",
-            "process_tree": "Média de CPU da árvore de processos; 100% corresponde a um núcleo",
-            "legacy_unspecified": "Resultado legado: o escopo de CPU não foi registrado",
-        }.get(r.get("cpu_scope"), "Média de CPU durante a fase de recursos")
-        power_scope = {
-            "device_components": "Potência dos dispositivos GPU e pacotes de CPU medidos; não é exclusiva do contêiner",
-            "host_board": "Potência de entrada da placa; inclui todos os componentes do host",
-            "legacy_device": "Resultado legado: potência medida no dispositivo",
-        }.get(r.get("power_scope"), "Potência média dos componentes medidos")
-        escaped_model = html.escape(model_full, quote=True)
-        rows.append(
-            '<div style="display:flex;padding:5px 0;border-bottom:1px solid #242424;'
-            'font-size:.77rem;color:#e7e7e7;align-items:center">'
-            f'<div style="flex:0 0 88px;color:#a3a3a3;font-size:.72rem;white-space:nowrap">{html.escape(ts)}</div>'
-            f'<div style="flex:0 0 56px"><span style="background:#202020;color:{fc};padding:1px 7px;'
-            f'border-radius:5px;font-size:.68rem;font-weight:700">{html.escape(front)}</span></div>'
-            f'<div style="flex:1;min-width:150px;font-size:.73rem;overflow:hidden;'
-            f'text-overflow:ellipsis;white-space:nowrap" title="{escaped_model}">{html.escape(model)}</div>'
-            f'<div style="flex:0 0 62px;color:#a3a3a3">{html.escape(profile)}</div>'
-            f'<div style="flex:0 0 88px;color:#14b8a6" title="{html.escape(primary_title)}">{html.escape(primary_text)}</div>'
-            f'<div style="flex:0 0 82px;font-weight:700;color:#14b8a6" title="Inferências concluídas por segundo no teste de throughput">{thr}</div>'
-            f'<div style="flex:0 0 58px" title="Latência p50 do teste de latência">{p50}</div>'
-            f'<div style="flex:0 0 58px" title="Latência p95 do teste de latência">{p95}</div>'
-            f'<div style="flex:0 0 58px" title="Latência p99 do teste de latência">{p99}</div>'
-            f'<div style="flex:0 0 58px" title="Desvio padrão das amostras de latência">{std}</div>'
-            f'<div style="flex:0 0 68px" title="{html.escape(ram_scope)}">{ram}</div>'
-            f'<div style="flex:0 0 62px" title="Pico menos baseline de RAM">{ram_delta}</div>'
-            f'<div style="flex:0 0 62px" title="{html.escape(cpu_scope)}">{cpu}</div>'
-            f'<div style="flex:0 0 52px" title="{html.escape(gpu_scope)}">{gpu}</div>'
-            f'<div style="flex:0 0 52px" title="{html.escape(accelerator_scope)}">{accelerator}</div>'
-            f'<div style="flex:0 0 64px" title="{html.escape(vram_scope)}">{vram}</div>'
-            f'<div style="flex:0 0 62px" title="Pico menos baseline de VRAM">{vram_delta}</div>'
-            f'<div style="flex:0 0 52px" title="Maior temperatura observada; lim. indica limitação térmica ativa">{temp}</div>'
-            f'<div style="flex:0 0 62px" title="{html.escape(power_scope)}">{power}</div>'
-            f'<div style="flex:0 0 72px" title="{html.escape(str(r.get("energy_source") or "sem fonte"))}">{energy}</div>'
-            f'<div style="flex:0 0 58px" title="Cobertura temporal da telemetria de energia">{coverage}</div>'
-            f'<div style="flex:0 0 72px" title="Energia por unidade principal">{energy_per_unit}</div>'
-            f'<div style="flex:0 0 82px" title="Custo por mil unidades principais">{html.escape(cost)}</div>'
-            '</div>'
-        )
-    return "\n".join(rows)
+            return fmt(host_cpu, 0) + "%" + (f" ({fmt(cores, 1)}c)" if cores is not None else "")
+        if cores is not None:
+            return fmt(cores, 1) + " cores"
+        return "—"
 
+    def cell_temp(r):
+        if r.get("peak_temp_c") is None:
+            return "—"
+        return fmt(r.get("peak_temp_c"), 0) + "°C" + (" (lim.)" if r.get("thermal_throttling_observed") else "")
+
+    def cell_cost(r):
+        if r.get("cost_per_1k") is None:
+            return "—"
+        return f"{r.get('cost_currency') or ''} {fmt(r.get('cost_per_1k'), 6)}".strip()
+
+    def unit(field, suffix, dec=0):
+        def f(rr):
+            v = rr.get(field)
+            return (fmt(v, dec) + suffix) if v is not None else "—"
+        return f
+
+    # (chave, rotulo, tooltip, largura_px, sempre_exibir, funcao-da-celula)
+    COLS = [
+        ("ts", "Quando", "Horario em que o benchmark rodou.", 88, True,
+         lambda r: _format_result_timestamp(r.get("timestamp", ""))),
+        ("front", "Frente", "Carga: vision (YOLO), slm (LLM) ou audio (ASR+TTS).", 56, True,
+         lambda r: str(r.get("front") or "?")),
+        ("model", "Modelo", "Modelo executado nesta medicao.", 150, True,
+         lambda r: str(r.get("model") or "?").replace(".gguf", "")[:32]),
+        ("profile", "Perfil", "quick/standard = desempenho; soak/torture = estresse sustentado.", 62, True,
+         lambda r: str(r.get("profile") or "?")),
+        ("primary", "Primaria", "Metrica principal: frames/s (visao), tokens/s (SLM), x tempo real (audio). Total produzido dividido pela duracao da fase.", 92, True,
+         lambda r: (f"{fmt((r.get('primary_metric') or {}).get('value'), 2)} "
+                    f"{(r.get('primary_metric') or {}).get('unit') or ''}".strip()
+                    if isinstance(r.get("primary_metric"), dict)
+                    and (r.get('primary_metric') or {}).get('value') is not None else "—")),
+        ("thr", "ops/s", "Throughput: inferencias concluidas por segundo, fora o warmup.", 74, True,
+         lambda r: fmt(r.get("throughput_ops"), 2)),
+        ("p50", "p50ms", "Latencia mediana das amostras individuais.", 56, True,
+         lambda r: fmt(r.get("p50_ms"))),
+        ("p95", "p95ms", "Latencia no percentil 95.", 56, False,
+         lambda r: fmt(r.get("p95_ms"))),
+        ("p99", "p99ms", "Latencia no percentil 99.", 56, True,
+         lambda r: fmt(r.get("p99_ms"))),
+        ("std", "σ ms", "Desvio padrao da latencia entre as amostras.", 52, False,
+         lambda r: fmt(r.get("std_ms"))),
+        ("ram", "RAM", "Pico de RAM da carga (working set do cgroup, ou RSS da arvore de processos).", 66, True,
+         unit("peak_ram_mb", "MB")),
+        ("ramd", "Δ RAM", "Pico de RAM menos o baseline coletado antes da fase.", 60, False,
+         unit("peak_ram_delta_mb", "MB")),
+        ("cpu", "CPU", "Uso medio de CPU do sistema (0-100%) na fase de recursos; entre parenteses, nucleos ocupados (ex.: 5.9c num hexa-core).", 80, True,
+         cell_cpu),
+        ("gpu", "GPU%", "Pico de uso de GPU. Zero ou ausente quando a carga roda em CPU.", 52, False,
+         unit("peak_gpu_util", "%")),
+        ("accel", "Acel.%", "Pico de uso de NPU/TPU/VPU quando ha acelerador.", 52, False,
+         unit("peak_accelerator_util", "%")),
+        ("vram", "VRAM", "Pico de VRAM (so em GPU dedicada).", 62, False,
+         unit("peak_vram_mb", "MB")),
+        ("temp", "Temp", "Maior temperatura na fase; (lim.) indica limitacao termica ativa.", 58, False,
+         cell_temp),
+        ("power", "Potencia", "Potencia media. Entrada da placa (VDD_IN) no Jetson; ausente sem sensor (ex.: Raspberry Pi).", 66, False,
+         unit("avg_power_w", "W", 1)),
+        ("energy", "Energia", "Energia dos componentes medidos na fase de recursos.", 68, False,
+         unit("energy_j", "J", 1)),
+        ("cov", "Cob.", "Fracao da fase coberta pela telemetria de energia; abaixo de 90% vira estimativa.", 52, False,
+         lambda r: (fmt(float(r["energy_coverage_ratio"]) * 100.0, 0) + "%")
+         if r.get("energy_coverage_ratio") is not None else "—"),
+        ("jperu", "J/unid.", "Energia por unidade principal (frame, token ou segundo de audio).", 68, False,
+         lambda r: fmt(r.get("energy_per_primary_unit_j"), 5)),
+        ("cost", "Custo/1k", "Custo estimado por mil unidades (amortizacao do hardware + energia da aba Hardware).", 78, False,
+         cell_cost),
+    ]
+
+    computed = [[(c, c[5](r)) for c in COLS] for r in results]
+    has_data = {c[0]: False for c in COLS}
+    for row in computed:
+        for col, val in row:
+            if val not in (None, "—", ""):
+                has_data[col[0]] = True
+    active = [c for c in COLS if c[4] or has_data[c[0]]]
+
+    def esc(v):
+        return html.escape(str(v), quote=True)
+
+    header_cells = "".join(
+        f'<div class="res-h metric-help" style="flex:0 0 {c[3]}px" data-tip="{esc(c[2])}">{esc(c[1])}</div>'
+        for c in active)
+    header = f'<div class="res-head">{header_cells}</div>'
+
+    body_rows = []
+    for r, row in zip(results, computed):
+        vals = {c[0]: v for c, v in row}
+        front = str(r.get("front") or "?")
+        fc = "#93c5fd" if front == "vision" else "#22c55e" if front == "slm" else "#f59e0b"
+        cells = []
+        for c in active:
+            key = c[0]
+            val = vals[key]
+            style = f"flex:0 0 {c[3]}px"
+            if key == "front":
+                cells.append(f'<div style="{style}"><span style="background:#202020;color:{fc};'
+                             f'padding:1px 7px;border-radius:5px;font-size:.68rem;font-weight:700">{esc(val)}</span></div>')
+            elif key == "model":
+                cells.append(f'<div style="flex:1;min-width:140px;overflow:hidden;text-overflow:ellipsis;'
+                             f'white-space:nowrap" title="{esc(r.get("model") or "")}">{esc(val)}</div>')
+            elif key in ("ts", "profile"):
+                cells.append(f'<div style="{style};color:#a3a3a3;font-size:.72rem">{esc(val)}</div>')
+            elif key in ("primary", "thr"):
+                cells.append(f'<div style="{style};color:#14b8a6;font-weight:700">{esc(val)}</div>')
+            else:
+                cells.append(f'<div style="{style}">{esc(val)}</div>')
+        body_rows.append(f'<div class="res-row">{"".join(cells)}</div>')
+
+    return header + "\n" + "\n".join(body_rows)
 
 def all_results():
     files = sorted(glob.glob(f"{RESULTS_DIR}/*.json"), key=os.path.getmtime, reverse=True)
