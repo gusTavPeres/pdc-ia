@@ -1030,8 +1030,14 @@ def render_results_html(front_filter="all"):
             return str(v)
 
     def cell_cpu(r):
-        host_cpu = r.get("avg_host_cpu_pct")
+        # Fração de CPU do device usada pela carga: núcleos do container / total.
+        # Consistente com os núcleos exibidos e sempre 0-100 (nunca 600% do cgroup).
         cores = r.get("cpu_cores_used")
+        total = r.get("cpu_cores_total")
+        if cores is not None and total:
+            pct = min(100.0, cores / total * 100.0)
+            return f"{fmt(pct, 0)}% ({fmt(cores, 1)}c)"
+        host_cpu = r.get("avg_host_cpu_pct")
         if host_cpu is not None:
             return fmt(host_cpu, 0) + "%" + (f" ({fmt(cores, 1)}c)" if cores is not None else "")
         if cores is not None:
@@ -1083,7 +1089,7 @@ def render_results_html(front_filter="all"):
          unit("peak_ram_mb", "MB")),
         ("ramd", "Δ RAM", "Pico de RAM menos o baseline coletado antes da fase.", 60, False,
          unit("peak_ram_delta_mb", "MB")),
-        ("cpu", "CPU", "Uso medio de CPU do sistema (0-100%) na fase de recursos; entre parenteses, nucleos ocupados (ex.: 5.9c num hexa-core).", 80, True,
+        ("cpu", "CPU", "Fracao de CPU do device usada pela carga (nucleos do container / total de nucleos, 0-100%); entre parenteses, os nucleos ocupados (ex.: 5.9c de 6).", 80, True,
          cell_cpu),
         ("gpu", "GPU%", "Pico de uso de GPU. Zero ou ausente quando a carga roda em CPU.", 52, False,
          unit("peak_gpu_util", "%")),

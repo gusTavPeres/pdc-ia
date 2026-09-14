@@ -427,6 +427,10 @@ def normalize_result(data: Any, filename: Optional[str] = None) -> dict:
         "avg_cpu_pct": resources["avg_cpu_pct"],
         "avg_host_cpu_pct": resources.get("avg_host_cpu_pct"),
         "cpu_cores_used": resources.get("cpu_cores_used"),
+        "cpu_cores_total": first_number(
+            get_nested(data, "system_info.cpu.cores_logical"),
+            get_nested(data, "metadata.execution.cpu_affinity_count"),
+        ),
         "cpu_scope": resources["cpu_scope"],
         "peak_gpu_util": resources["peak_gpu_util"],
         "avg_gpu_pct": resources["avg_gpu_pct"],
