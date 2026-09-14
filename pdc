@@ -531,14 +531,27 @@ def cmd_benchmark(args):
             if front == "audio" and mode:
                 request_data["mode"] = mode
             payload = json.dumps(request_data).encode()
-            req = urllib.request.Request(
-                f"http://localhost:{port}/benchmark",
-                data=payload,
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=args.timeout) as r:
-                result = json.loads(r.read())
+            # 409 = ainda há um benchmark rodando: numa placa lenta o lock do
+            # container leva um instante para liberar após a rep anterior. Espera
+            # e tenta de novo em vez de contar como falha.
+            result = None
+            for tentativa in range(6):
+                req = urllib.request.Request(
+                    f"http://localhost:{port}/benchmark",
+                    data=payload,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                try:
+                    with urllib.request.urlopen(req, timeout=args.timeout) as r:
+                        result = json.loads(r.read())
+                    break
+                except urllib.error.HTTPError as http_exc:
+                    if http_exc.code == 409 and tentativa < 5:
+                        warn(f"{front}: container ocupado (409), aguardando 5s e repetindo...")
+                        time.sleep(5)
+                        continue
+                    raise
 
             bench = result.get("benchmark_results", {})
             tp = bench.get("throughput", {})
