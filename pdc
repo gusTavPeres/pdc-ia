@@ -99,6 +99,11 @@ def _has_nvidia_gpu():
     return False
 
 
+def _is_jetson():
+    """True se rodando num Jetson (existe o release do L4T)."""
+    return os.path.exists("/etc/nv_tegra_release")
+
+
 def _supports_current_cuda_images():
     return os.uname().machine.lower() in {"x86_64", "amd64"}
 
@@ -106,9 +111,12 @@ def _supports_current_cuda_images():
 def _compose_cmd(front, gpu_enabled=False):
     compose_file = BASE_DIR / FRONTS[front]["compose"]
     cmd = ["docker", "compose", "-f", str(compose_file)]
+    jetson_file = compose_file.with_name("docker-compose.jetson.yml")
     gpu_file = compose_file.with_name("docker-compose.gpu.yml")
-    if gpu_enabled and gpu_file.exists():
-        cmd.extend(["-f", str(gpu_file)])
+    if gpu_enabled and _is_jetson() and jetson_file.exists():
+        cmd.extend(["-f", str(jetson_file)])   # GPU do Jetson (imagem l4t prebuilt)
+    elif gpu_enabled and gpu_file.exists():
+        cmd.extend(["-f", str(gpu_file)])       # GPU dGPU x86
     return cmd
 
 
@@ -301,7 +309,7 @@ def cmd_build(args):
     if args.cpu and args.gpu:
         err("Use apenas um modo: --cpu ou --gpu")
         raise SystemExit(1)
-    if args.gpu and not _supports_current_cuda_images():
+    if args.gpu and not _supports_current_cuda_images() and not _is_jetson():
         err("A variante CUDA atual é destinada a NVIDIA dGPU x86_64; em ARM use --cpu")
         raise SystemExit(1)
     if args.gpu and not _has_nvidia_gpu():
@@ -344,7 +352,7 @@ def cmd_up(args):
     if args.cpu and args.gpu:
         err("Use apenas um modo: --cpu ou --gpu")
         sys.exit(1)
-    if args.gpu and not _supports_current_cuda_images():
+    if args.gpu and not _supports_current_cuda_images() and not _is_jetson():
         err("A variante CUDA atual é destinada a NVIDIA dGPU x86_64; em ARM use --cpu")
         raise SystemExit(1)
     if args.gpu and not _has_nvidia_gpu():

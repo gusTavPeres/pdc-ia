@@ -1,0 +1,11 @@
+# Variante GPU do Jetson (L4T/JetPack). Usa a imagem prebuilt pdc-slm:jetson-gpu
+# (montada por build-jetson-gpu.sh) e o runtime nvidia do Docker. Ver docs/CUDA_JETSON.md.
+services:
+  pdc-slm:
+    image: pdc-slm:jetson-gpu
+    build: !reset null
+    runtime: nvidia
+    environment:
+      - PDC_GPU_MODE=gpu
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
