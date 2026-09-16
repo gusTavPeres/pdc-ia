@@ -58,9 +58,14 @@ build_audio() {
   docker rm -f b-aud 2>/dev/null
   docker run -d --name b-aud --network host dustynv/whisperx:r36.2.0 sleep infinity >/dev/null
   # CTranslate2 CUDA ja na base. faster-whisper + piper + servidor.
+  # faster-whisper compativel com o ctranslate2 3.24 (CUDA) da base, com
+  # --no-deps para NAO trocar o ctranslate2 por um de CPU. Depois as deps dele
+  # (menos ctranslate2) + piper + servidor.
+  docker exec -e PIP_INDEX_URL=$PIP b-aud pip3 install --no-cache-dir --no-deps \
+    faster-whisper==0.10.1 2>&1 | tail -1
   docker exec -e PIP_INDEX_URL=$PIP b-aud pip3 install --no-cache-dir \
-    faster-whisper==1.2.1 piper-tts==1.5.0 soundfile numpy==1.26.4 psutil pyyaml \
-    requests fastapi "uvicorn[standard]" python-multipart 2>&1 | tail -1
+    av huggingface-hub tokenizers onnxruntime piper-tts==1.5.0 soundfile \
+    numpy==1.26.4 psutil pyyaml requests fastapi "uvicorn[standard]" python-multipart 2>&1 | tail -1
   _commit b-aud pdc-audio:jetson-gpu audio
 }
 

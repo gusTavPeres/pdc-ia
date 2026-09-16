@@ -184,3 +184,29 @@ docker run --rm --runtime nvidia -e NVIDIA_VISIBLE_DEVICES=all \
 - **Próximo passo (requer decisão):** integrar como variante `--gpu` do Jetson no
   `./pdc` — detectar L4T, usar o compose com `runtime: nvidia`, e medir SLM/áudio
   na GPU também. Isso mexe no fluxo do CLI, então fica para aprovação.
+
+## Integração no ./pdc (variante GPU do Jetson) e resultados
+
+Variante commitada: `_is_jetson()` detecta o L4T e `--gpu` no Jetson usa
+`docker-compose.jetson.yml` (imagem `pdc-<front>:jetson-gpu` + `runtime: nvidia`),
+em vez da imagem CUDA x86. As imagens são montadas por `build-jetson-gpu.sh`.
+
+Medido pelo pipeline real do `./pdc` (não `predict()` cru):
+
+| Frente | CPU | GPU (Jetson) | Ganho |
+| --- | --- | --- | --- |
+| visão (YOLOv8n) | 2,7 fps | **20,4 fps** | **7,5×** |
+| SLM (tinyllama-1.1B) | ~20 tok/s | **54,4 tok/s** | **2,7×** |
+| áudio (whisper) | — | ver abaixo | — |
+
+Bases usadas (públicas, mantidas pela NVIDIA/comunidade; nada instalado no host):
+- visão: `dustynv/l4t-pytorch:r36.2.0` (torch 2.2.0 CUDA) + ultralytics.
+- SLM: `dustynv/llama_cpp:r36.2.0` (llama.cpp com offload CUDA).
+- áudio: `dustynv/whisperx:r36.2.0` (CTranslate2 3.24 com CUDA).
+
+### Percalço do áudio (CTranslate2)
+
+A base whisperx traz `ctranslate2 3.24.0` **com CUDA (1 device)**. Instalar
+`faster-whisper==1.2.1` puxava `ctranslate2 4.8.2` **de CPU** por cima, zerando a
+GPU. Correção: `faster-whisper==0.10.1 --no-deps` (compatível com o ct2 3.24 da
+base) + as demais dependências, preservando o CTranslate2 CUDA.
