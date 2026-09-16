@@ -3,7 +3,6 @@
 services:
   pdc-vision:
     image: pdc-vision:jetson-gpu
-    build: !reset null
     runtime: nvidia
     environment:
       - PDC_GPU_MODE=gpu

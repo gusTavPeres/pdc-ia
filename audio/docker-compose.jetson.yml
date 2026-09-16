@@ -3,7 +3,6 @@
 services:
   pdc-audio:
     image: pdc-audio:jetson-gpu
-    build: !reset null
     runtime: nvidia
     environment:
       - PDC_GPU_MODE=gpu
