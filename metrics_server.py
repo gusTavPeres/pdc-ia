@@ -1273,6 +1273,64 @@ def _activate_for_benchmark(front, model=None, mode=None):
                     raise RuntimeError(result["error"])
 
 
+STRESS_PROFILES = {"soak", "torture", "estresse_basico", "estresse_medio",
+                   "estresse_extremo", "custom_stress"}
+
+
+def stress_results_api():
+    """Resultados de estresse com séries para gráfico (temp e throughput/min).
+
+    Lê os JSON de results/, filtra perfis com carga sustentada e devolve, por
+    teste: metadados, degradação/temp/throttle e as curvas de temperatura ao
+    longo do tempo e de throughput por minuto.
+    """
+    out = []
+    # prefiltro por nome (o perfil vai no nome do arquivo): evita abrir os 200+
+    # JSON de desempenho e nao perde os testes de estresse mais antigos.
+    pats = ("*_soak_*", "*_torture_*", "*_estresse_*", "*_custom_stress_*")
+    files = []
+    for pat in pats:
+        files += glob.glob(f"{RESULTS_DIR}/{pat}.json")
+    try:
+        files = sorted(set(files), key=os.path.getmtime, reverse=True)
+    except Exception:
+        files = sorted(set(files))
+    for path in files[:150]:
+        try:
+            d = json.load(open(path))
+        except Exception:
+            continue
+        profile = d.get("profile")
+        b = d.get("benchmark_results", {})
+        sl = b.get("sustained_load", {})
+        # só o que teve carga sustentada de fato (duração > 0 => throughput_per_minute)
+        tpm = sl.get("throughput_per_minute")
+        if profile not in STRESS_PROFILES or not tpm or len(tpm) < 3:
+            continue
+        ru = b.get("resource_usage", {})
+        temp = []
+        for s in ru.get("timeseries", []):
+            t = s.get("timestamp")
+            v = s.get("temp_c") or s.get("cpu_temp_c") or s.get("platform_temp_c")
+            if isinstance(t, (int, float)) and isinstance(v, (int, float)):
+                temp.append([round(t, 1), round(v, 1)])
+        model = d.get("model")
+        if isinstance(model, dict):
+            model = model.get("asr") or "?"
+        out.append({
+            "id": os.path.basename(path)[:-5],
+            "front": d.get("front"), "model": str(model or "?")[:22],
+            "profile": profile, "timestamp": d.get("timestamp"),
+            "degradation_pct": sl.get("degradation_pct"),
+            "temp_max_c": sl.get("temp_max_c"),
+            "throttling": bool(sl.get("throttling_detected")),
+            "throughput_per_minute": tpm,
+            "temp_series": temp,
+            "primary_unit": (d.get("scorecard", {}).get("primary_metric", {}) or {}).get("unit", ""),
+        })
+    return out
+
+
 def _write_custom_stress_profile(duration_min, name="custom_stress"):
     """Grava um perfil de estresse com a duração pedida no benchmark.yaml.
 
@@ -1502,6 +1560,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._json_response(detected_hardware_api(refresh=refresh))
             except Exception as exc:
                 self._json_response({"error": str(exc)}, 500)
+
+        elif path == "/api/stress-results":
+            self._json_response({"results": stress_results_api()})
 
         elif path == "/api/results-html":
             qs = parse_qs(urlparse(self.path).query)

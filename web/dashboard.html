@@ -403,6 +403,24 @@ canvas{max-height:180px}
     <div id="stress-status" style="font-size:.82rem;color:var(--sub);margin:6px 0">Nenhum teste em andamento. Escolha um perfil acima.</div>
     <div id="stress-result"></div>
   </div>
+
+  <div class="card" style="margin-top:14px">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+      <h2>Gráficos — evolução e comparação</h2>
+      <button class="btn sm" onclick="loadStressGraphs()">Atualizar</button>
+    </div>
+    <p style="font-size:.78rem;color:var(--sub);margin:4px 0 10px">
+      Marque testes de estresse para sobrepor as curvas. <b>Temperatura</b> subindo e
+      <b>throughput por minuto</b> caindo = throttling. Comparar testes mostra qual
+      configuração/device sustenta melhor.
+    </p>
+    <div id="stress-list" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px;font-size:.76rem"></div>
+    <div class="grid g2">
+      <div><div style="font-size:.78rem;color:var(--sub);margin-bottom:4px">Temperatura ao longo do tempo (°C)</div><canvas id="chart-stress-temp" height="140"></canvas></div>
+      <div><div style="font-size:.78rem;color:var(--sub);margin-bottom:4px">Throughput por minuto (queda = degradação)</div><canvas id="chart-stress-tpm" height="140"></canvas></div>
+    </div>
+    <div style="margin-top:14px"><div style="font-size:.78rem;color:var(--sub);margin-bottom:4px">Comparativo — degradação (%) e temp. máx (°C)</div><canvas id="chart-stress-cmp" height="120"></canvas></div>
+  </div>
 </div>
 
 <div class="page" id="page-inference">
@@ -846,6 +864,50 @@ async function pollStress(fronts) {
     if(!running && stressPollTimer) { clearInterval(stressPollTimer); stressPollTimer = null; }
   } catch(e) {}
 }
+let stressData = [], stressSel = new Set(), stressCharts = {};
+const STRESS_COLORS = ['#4c6ef5','#e5484d','#2f9e44','#f08c00','#7048e8','#0ca678','#e64980','#1098ad'];
+async function loadStressGraphs() {
+  try {
+    const r = await fetch('/api/stress-results'); const d = await r.json();
+    stressData = d.results || [];
+    const list = document.getElementById('stress-list');
+    if(!stressData.length) { list.innerHTML = '<span style="color:var(--dim)">Nenhum teste de estresse com carga sustentada ainda. Rode um perfil (Médio/Extremo) ou aguarde as campanhas.</span>'; return; }
+    // pre-seleciona os 2 mais recentes
+    if(!stressSel.size) stressData.slice(0,2).forEach(x => stressSel.add(x.id));
+    list.innerHTML = stressData.map((x,i) => {
+      const on = stressSel.has(x.id);
+      const c = STRESS_COLORS[i % STRESS_COLORS.length];
+      return '<label style="display:inline-flex;align-items:center;gap:5px;border:1px solid var(--border);border-radius:6px;padding:3px 8px;cursor:pointer;'+(on?'background:#1c1c1c':'')+'">'
+        + '<input type="checkbox" '+(on?'checked':'')+' onchange="toggleStress(\''+x.id+'\')">'
+        + '<span style="width:9px;height:9px;border-radius:2px;background:'+c+';display:inline-block"></span>'
+        + x.front+' · '+x.model+' · '+x.profile
+        + ' <b class="'+(x.throttling?'stress-bad':'stress-ok')+'">'+(x.throttling?'⚠':'✓')+'</b></label>';
+    }).join('');
+    renderStressCharts();
+  } catch(e) { document.getElementById('stress-list').innerHTML = '<span style="color:var(--red)">Erro: '+e.message+'</span>'; }
+}
+function toggleStress(id) { if(stressSel.has(id)) stressSel.delete(id); else stressSel.add(id); loadStressGraphs(); }
+function _mkChart(id, cfg) { if(stressCharts[id]) stressCharts[id].destroy(); const el=document.getElementById(id); if(el&&window.Chart) stressCharts[id]=new Chart(el, cfg); }
+function renderStressCharts() {
+  const sel = stressData.filter(x => stressSel.has(x.id));
+  const color = x => STRESS_COLORS[stressData.indexOf(x) % STRESS_COLORS.length];
+  const label = x => x.front+'/'+x.model+'/'+x.profile;
+  // temperatura ao longo do tempo (min)
+  _mkChart('chart-stress-temp', {type:'line', data:{datasets: sel.map(x => ({
+      label: label(x), borderColor: color(x), backgroundColor:'transparent', borderWidth:1.6, pointRadius:0, tension:.25,
+      data: x.temp_series.map(p => ({x:p[0]/60, y:p[1]}))
+    }))}, options:{responsive:true, animation:false, scales:{x:{type:'linear',title:{display:true,text:'min'}},y:{title:{display:true,text:'°C'}}}, plugins:{legend:{labels:{boxWidth:10,font:{size:10}}}}}});
+  // throughput por minuto
+  _mkChart('chart-stress-tpm', {type:'line', data:{datasets: sel.map(x => ({
+      label: label(x), borderColor: color(x), backgroundColor:'transparent', borderWidth:1.6, pointRadius:0, tension:.25,
+      data: x.throughput_per_minute.map((v,i) => ({x:i+1, y:v}))
+    }))}, options:{responsive:true, animation:false, scales:{x:{type:'linear',title:{display:true,text:'minuto'}},y:{title:{display:true,text:'throughput'}}}, plugins:{legend:{labels:{boxWidth:10,font:{size:10}}}}}});
+  // comparativo: degradacao e temp max (barras)
+  _mkChart('chart-stress-cmp', {type:'bar', data:{labels: sel.map(label), datasets:[
+      {label:'Degradação %', backgroundColor:'#e5484d', data: sel.map(x=>x.degradation_pct), yAxisID:'y'},
+      {label:'Temp máx °C', backgroundColor:'#f08c00', data: sel.map(x=>x.temp_max_c), yAxisID:'y2'}
+    ]}, options:{responsive:true, animation:false, scales:{y:{position:'left',title:{display:true,text:'degr %'}},y2:{position:'right',grid:{drawOnChartArea:false},title:{display:true,text:'°C'}}}, plugins:{legend:{labels:{boxWidth:10,font:{size:10}}}}}});
+}
 function showTab(name) {
   document.querySelectorAll('.tab').forEach((t,i) => {
     const pages = ['monitor','benchmark','estresse','inference','results','compare','hardware','config'];
@@ -853,7 +915,7 @@ function showTab(name) {
   });
   document.querySelectorAll('.page').forEach(p => p.classList.toggle('active', p.id === 'page-'+name));
   if(name === 'results') refreshResultsIfNeeded(true, true);
-  if(name === 'estresse') stressLogicChange();
+  if(name === 'estresse') { stressLogicChange(); loadStressGraphs(); }
   if(name === 'compare') populateCompareSelects();
   if(name === 'hardware') {
     loadContainerRuntime();
