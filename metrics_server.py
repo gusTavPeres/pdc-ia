@@ -40,6 +40,7 @@ MODEL_TARGETS = ("vision", "slm", "audio_asr", "audio_tts")
 # Estado de execução dos benchmarks iniciados pelo dashboard.
 _benchmark_status = {}  # {front: {running, progress, started, result}}
 _lock = threading.Lock()
+_config_write_lock = threading.Lock()
 _result_cache = {}
 _result_cache_lock = threading.Lock()
 _config_lock = threading.RLock()
@@ -1272,6 +1273,27 @@ def _activate_for_benchmark(front, model=None, mode=None):
                     raise RuntimeError(result["error"])
 
 
+def _write_custom_stress_profile(duration_min, name="custom_stress"):
+    """Grava um perfil de estresse com a duração pedida no benchmark.yaml.
+
+    O container relê o config a cada benchmark, então o perfil fica disponível
+    sem reiniciar nada. Usa estresse_medio como molde e só troca a duração.
+    """
+    import yaml
+    path = os.path.join(BASE, "config", "benchmark.yaml")
+    with _config_write_lock:
+        cfg = _load_yaml(path) or {}
+        profiles = cfg.setdefault("profiles", {})
+        base = dict(profiles.get("estresse_medio") or profiles.get("standard") or {})
+        base["sustained_load"] = {"duration_min": int(duration_min)}
+        profiles[name] = base
+        tmp = path + ".tmp"
+        with open(tmp, "w") as fh:
+            yaml.safe_dump(cfg, fh, sort_keys=False, allow_unicode=True)
+        os.replace(tmp, path)
+    return name
+
+
 def trigger_benchmark(front, profile="quick", model=None, mode=None):
     """Ativa o modelo e inicia o benchmark em segundo plano."""
     port = CONTAINERS.get(front)
@@ -1529,6 +1551,44 @@ class Handler(BaseHTTPRequestHandler):
                 self._json_response({"error": "already running"}, 409)
                 return
             self._json_response({"status": "started", "front": front, "profile": profile})
+
+        elif path == "/api/stress":
+            # Teste de estresse: sustentado (uma frente) ou concorrente (todas
+            # ao mesmo tempo, que estressa o device inteiro). profile pode ser um
+            # perfil pronto (estresse_basico/medio/extremo) ou "custom" + duration_min.
+            logic = data.get("logic", "sustentado")
+            profile = data.get("profile", "estresse_medio")
+            duration_min = data.get("duration_min")
+            try:
+                if profile == "custom":
+                    if not isinstance(duration_min, (int, float)) or not 1 <= duration_min <= 720:
+                        raise ValueError("duration_min deve estar entre 1 e 720")
+                    profile = _write_custom_stress_profile(duration_min)
+                else:
+                    cfg = _load_yaml(os.path.join(BASE, "config", "benchmark.yaml"))
+                    if profile not in cfg.get("profiles", {}):
+                        raise ValueError(f"perfil '{profile}' não encontrado")
+            except Exception as exc:
+                self._json_response({"error": str(exc)}, 400)
+                return
+            if logic == "concorrente":
+                fronts = ["vision", "slm", "audio"]
+            else:
+                f = data.get("front", "vision")
+                if f not in CONTAINERS:
+                    self._json_response({"error": f"unknown front: {f}"}, 400)
+                    return
+                fronts = [f]
+            started, busy = [], []
+            for f in fronts:
+                mode = "asr" if f == "audio" else None
+                if trigger_benchmark(f, profile, mode=mode):
+                    started.append(f)
+                else:
+                    busy.append(f)
+            self._json_response({"status": "started" if started else "busy",
+                                 "logic": logic, "profile": profile,
+                                 "started": started, "busy": busy})
 
         elif path == "/api/switch-model":
             result = do_slm_switch(data.get("model", ""))

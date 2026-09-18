@@ -29,6 +29,8 @@ a{color:var(--accent2);text-decoration:none}
 .tab:hover{color:var(--text)}
 .tab.active{color:var(--accent);border-bottom-color:var(--accent)}
 
+.stress-ok{color:#2b8a3e;font-weight:600}
+.stress-bad{color:#e03131;font-weight:700}
 .page{display:none;padding:20px 24px}
 .page.active{display:block}
 
@@ -163,6 +165,7 @@ canvas{max-height:180px}
 <div class="tabs">
   <div class="tab active" onclick="showTab('monitor')">Monitoramento</div>
   <div class="tab" onclick="showTab('benchmark')">Benchmarks</div>
+  <div class="tab" onclick="showTab('estresse')">Estresse</div>
   <div class="tab" onclick="showTab('inference')">Inferência</div>
   <div class="tab" onclick="showTab('results')">Resultados</div>
   <div class="tab" onclick="showTab('compare')">Comparação</div>
@@ -342,6 +345,66 @@ canvas{max-height:180px}
 </div>
 
 <!-- Inferencia -->
+<div class="page" id="page-estresse">
+  <div class="card" style="margin-bottom:14px">
+    <h2>Teste de Estresse — o device sustenta a performance?</h2>
+    <p style="font-size:.82rem;color:var(--sub);margin:6px 0 0">
+      Carga contínua por vários minutos. Se a placa esquentar e <b>reduzir o clock</b>
+      (throttling térmico), a performance cai sob uso prolongado — o device pode não
+      servir para aquela carga em produção. As métricas-chave: <b>degradação</b>
+      (queda de throughput ao longo do teste), <b>temperatura máxima</b> e se houve
+      <b>throttling</b>. Um device que segura a performance mantém degradação ~0 e
+      não throttla.
+    </p>
+  </div>
+
+  <div class="grid g2" style="margin-bottom:14px">
+    <div class="card">
+      <h2>Perfis prontos</h2>
+      <p style="font-size:.78rem;color:var(--sub);margin:4px 0 12px">Carga sustentada por tempo crescente.</p>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <button class="btn" onclick="runStress('estresse_basico')"><b>Básico</b> · 5 min · toque rápido de estabilidade</button>
+        <button class="btn" onclick="runStress('estresse_medio')"><b>Médio</b> · 20 min · uso moderado sustentado</button>
+        <button class="btn" onclick="runStress('estresse_extremo')"><b>Extremo</b> · 60 min · pior caso térmico</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Customizado</h2>
+      <div style="display:flex;flex-direction:column;gap:10px;margin-top:8px">
+        <div style="display:flex;gap:8px;align-items:center">
+          <span style="font-size:.78rem;color:var(--sub);width:80px">Lógica:</span>
+          <select id="stress-logic" style="flex:1" onchange="stressLogicChange()">
+            <option value="sustentado">Sustentado — uma frente</option>
+            <option value="concorrente">Concorrente — todas as frentes ao mesmo tempo</option>
+          </select>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center" id="stress-front-row">
+          <span style="font-size:.78rem;color:var(--sub);width:80px">Frente:</span>
+          <select id="stress-front" style="flex:1">
+            <option value="vision">Vision (YOLO)</option>
+            <option value="slm">SLM (LLM)</option>
+            <option value="audio">Áudio (Whisper)</option>
+          </select>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <span style="font-size:.78rem;color:var(--sub);width:80px">Duração:</span>
+          <input id="stress-duration" type="number" min="1" max="720" value="30" style="flex:1"> <span style="font-size:.78rem;color:var(--sub)">min</span>
+        </div>
+        <button class="btn primary" onclick="runStressCustom()">Rodar estresse customizado</button>
+        <p style="font-size:.72rem;color:var(--dim);margin:0">
+          Concorrente estressa CPU, GPU e memória juntos — o cenário mais duro para o resfriamento.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Resultado do estresse</h2>
+    <div id="stress-status" style="font-size:.82rem;color:var(--sub);margin:6px 0">Nenhum teste em andamento. Escolha um perfil acima.</div>
+    <div id="stress-result"></div>
+  </div>
+</div>
+
 <div class="page" id="page-inference">
   <div class="grid g2">
     <div class="card">
@@ -727,13 +790,70 @@ let resultsRequestKey = '';
 let visionPreviewMeta = {width:0,height:0};
 
 /* Tabs */
+let stressPollTimer = null;
+function stressLogicChange() {
+  const logic = document.getElementById('stress-logic')?.value;
+  const row = document.getElementById('stress-front-row');
+  if(row) row.style.display = logic === 'concorrente' ? 'none' : 'flex';
+}
+async function runStress(profile) {
+  const logic = document.getElementById('stress-logic')?.value || 'sustentado';
+  const front = document.getElementById('stress-front')?.value || 'vision';
+  await postStress({logic, front, profile});
+}
+async function runStressCustom() {
+  const logic = document.getElementById('stress-logic')?.value || 'sustentado';
+  const front = document.getElementById('stress-front')?.value || 'vision';
+  const dur = parseInt(document.getElementById('stress-duration')?.value || '30', 10);
+  await postStress({logic, front, profile:'custom', duration_min:dur});
+}
+async function postStress(body) {
+  const st = document.getElementById('stress-status');
+  st.textContent = 'Iniciando...';
+  try {
+    const r = await fetch('/api/stress', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+    const d = await r.json();
+    if(!r.ok || d.status === 'busy') { st.textContent = 'Ocupado — já há benchmark rodando (' + (d.busy||[]).join(', ') + '). Aguarde terminar.'; return; }
+    st.textContent = 'Rodando estresse (' + d.logic + ', perfil ' + d.profile + ') em: ' + d.started.join(', ') + ' — acompanhe a temperatura na aba Monitoramento.';
+    if(stressPollTimer) clearInterval(stressPollTimer);
+    stressPollTimer = setInterval(() => pollStress(d.started), 5000);
+    pollStress(d.started);
+  } catch(e) { st.textContent = 'Erro: ' + e.message; }
+}
+async function pollStress(fronts) {
+  try {
+    const r = await fetch('/api/metrics'); const m = await r.json();
+    const bs = m.benchmark_status || {};
+    let running = false, rows = '';
+    for(const f of fronts) {
+      const s = bs[f] || {};
+      if(s.running) { running = true; continue; }
+      const res = s.result || {};
+      const sl = (res.benchmark_results || {}).sustained_load || {};
+      if(Object.keys(sl).length) {
+        const thr = sl.throttling_detected;
+        const degr = sl.degradation_pct, tmax = sl.temp_max_c;
+        rows += '<tr><td>'+f+'</td>'
+          + '<td>'+(degr!=null?degr.toFixed(1)+'%':'—')+'</td>'
+          + '<td>'+(tmax!=null?tmax.toFixed(0)+'°C':'—')+'</td>'
+          + '<td class="'+(thr?'stress-bad':'stress-ok')+'">'+(thr?'SIM — throttlou':'não — sustentou')+'</td></tr>';
+      }
+    }
+    const stFronts = fronts.map(f => (bs[f]&&bs[f].running)?f+' (rodando)':f+' (ok)').join(', ');
+    document.getElementById('stress-status').textContent = running ? 'Em andamento: '+stFronts : 'Concluído: '+stFronts;
+    if(rows) document.getElementById('stress-result').innerHTML =
+      '<table style="width:100%;font-size:.82rem;margin-top:8px"><thead><tr><th style="text-align:left">Frente</th><th>Degradação</th><th>Temp máx</th><th>Throttling</th></tr></thead><tbody>'+rows+'</tbody></table>';
+    if(!running && stressPollTimer) { clearInterval(stressPollTimer); stressPollTimer = null; }
+  } catch(e) {}
+}
 function showTab(name) {
   document.querySelectorAll('.tab').forEach((t,i) => {
-    const pages = ['monitor','benchmark','inference','results','compare','hardware','config'];
+    const pages = ['monitor','benchmark','estresse','inference','results','compare','hardware','config'];
     t.classList.toggle('active', pages[i] === name);
   });
   document.querySelectorAll('.page').forEach(p => p.classList.toggle('active', p.id === 'page-'+name));
   if(name === 'results') refreshResultsIfNeeded(true, true);
+  if(name === 'estresse') stressLogicChange();
   if(name === 'compare') populateCompareSelects();
   if(name === 'hardware') {
     loadContainerRuntime();
