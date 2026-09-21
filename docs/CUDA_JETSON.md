@@ -210,3 +210,50 @@ A base whisperx traz `ctranslate2 3.24.0` **com CUDA (1 device)**. Instalar
 `faster-whisper==1.2.1` puxava `ctranslate2 4.8.2` **de CPU** por cima, zerando a
 GPU. Correção: `faster-whisper==0.10.1 --no-deps` (compatível com o ct2 3.24 da
 base) + as demais dependências, preservando o CTranslate2 CUDA.
+
+### 20-21/09 — SLM: gemma3 e qwen3 não carregavam na GPU (base velha)
+
+**Sintoma.** Na campanha longa, 3 modelos SLM falhavam toda rodada só no Jetson
+(RC=1): `gemma3-1b-q4`, `gemma3-1b-q8`, `qwen3-4b-q4`. Os demais (tinyllama,
+qwen2.5-0.5b), além de vision e audio, rodavam normalmente. Erro real no
+container:
+
+```
+[slm] Carregando: gemma-3-1b-it-Q8_0.gguf (formato: gemma3)
+[slm] GPU falhou: Failed to load model ... Usando CPU...
+POST /switch-model -> 500
+```
+
+**Causa.** Não era arquivo faltando (os ggufs estavam presentes) nem memória: o
+`llama.cpp` da base `dustynv/llama_cpp:r36.2.0` é **velho demais para as
+arquiteturas gemma3 e qwen3** — falha já no parse/registro da arquitetura.
+Prova cruzada: os mesmos 3 modelos rodam sem falha no Raspberry Pi (CPU), que
+tem um llama.cpp mais novo.
+
+**Correção.** Reconstruir `pdc-slm:jetson-gpu` sobre uma base com llama.cpp novo:
+`dustynv/llama_cpp:b5283-r36.4-cu128-24.04` (llama.cpp b5283, `llama-cpp-python
+0.3.8`, venv Python 3.12). A base já traz fastapi/uvicorn/numpy 2.2.5/psutil/
+pyyaml/requests/pydantic — só faltou `pynvml`. **Não** reinstalar numpy (o
+llama_cpp da base foi compilado com o numpy 2.x dele). Ver `build-jetson-gpu.sh`
+função `build_slm`.
+
+**cu128 no driver 12.6.** A base é CUDA 12.8; o Jetson roda driver CUDA 12.6.
+Funciona por compatibilidade forward de minor version do CUDA 12.x (o runtime
+nvidia monta o driver do host) — validado empiricamente: gemma3 e qwen3-4b
+carregam com offload total na GPU.
+
+**Resultado (benchmark quick real, GPU, device=cuda):**
+
+| modelo        | tokens/s |
+|---------------|----------|
+| gemma3-1b-q4  | 27,1     |
+| gemma3-1b-q8  | 22,9     |
+| qwen3-4b-q4   | 14,8     |
+
+**Memória (qwen3-4b).** O Qwen3-4B usa ~2,4 GB de buffer na GPU. No Jetson de
+8 GB unificados com os 3 fronts residentes, se o container de áudio estiver
+segurando um whisper grande pode faltar RAM e o qwen3-4b cai em OOM → CPU. É
+limite de **memória**, não de arquitetura; com o stack em estado normal
+(~2,4 GB livres) ele faz offload total (37/37 layers) na GPU.
+
+**Rollback.** A imagem antiga ficou salva como `pdc-slm:jetson-gpu-r36.2-bak`.

@@ -44,12 +44,16 @@ build_vision() {
 }
 
 build_slm() {
-  echo "== slm (llama.cpp CUDA) =="
+  # Base b5283/r36.4: llama.cpp novo o bastante para gemma3 E qwen3 (a r36.2.0
+  # era velha demais — falhava no load dessas arquiteturas na GPU). cu128 roda no
+  # driver 12.6 do Jetson por compat forward de minor version (validado).
+  echo "== slm (llama.cpp CUDA — base b5283 r36.4, gemma3/qwen3) =="
   docker rm -f b-slm 2>/dev/null
-  docker run -d --name b-slm --network host dustynv/llama_cpp:r36.2.0 sleep infinity >/dev/null
-  # llama-cpp-python com CUDA ja vem na base. So o servidor da frente.
-  docker exec -e PIP_INDEX_URL=$PIP b-slm pip3 install --no-cache-dir \
-    numpy==1.26.4 psutil pyyaml requests fastapi "uvicorn[standard]" 2>&1 | tail -1
+  docker run -d --name b-slm --network host dustynv/llama_cpp:b5283-r36.4-cu128-24.04 sleep infinity >/dev/null
+  # a base ja traz, no venv /opt/venv: llama-cpp-python 0.3.8 CUDA, fastapi,
+  # uvicorn, numpy 2.2.5, psutil, pyyaml, requests, pydantic. So falta pynvml.
+  # NAO reinstalar numpy: o llama_cpp da base foi compilado com o numpy 2.x dele.
+  docker exec -e PIP_INDEX_URL=$PIP b-slm python3 -m pip install --no-cache-dir pynvml 2>&1 | tail -1
   _commit b-slm pdc-slm:jetson-gpu slm
 }
 
