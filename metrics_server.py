@@ -11,6 +11,7 @@ import math
 import os
 import re
 import subprocess
+import signal
 import tempfile
 import threading
 import time
@@ -1317,6 +1318,21 @@ def stress_results_api():
         model = d.get("model")
         if isinstance(model, dict):
             model = model.get("asr") or "?"
+        # média e correlação desempenho×tempo: regressão linear de throughput/min
+        # vs minuto do teste. slope = queda por minuto; corr (Pearson) perto de -1
+        # = degradação constante, perto de 0 = estável ao longo do tempo.
+        nums = [v for v in tpm if isinstance(v, (int, float))]
+        n = len(nums)
+        avg_tpm = sum(nums) / n if n else 0.0
+        slope = corr = 0.0
+        if n >= 2:
+            xs = list(range(1, n + 1))
+            mx = sum(xs) / n
+            sxx = sum((x - mx) ** 2 for x in xs)
+            sxy = sum((x - mx) * (y - avg_tpm) for x, y in zip(xs, nums))
+            syy = sum((y - avg_tpm) ** 2 for y in nums)
+            slope = sxy / sxx if sxx else 0.0
+            corr = sxy / ((sxx * syy) ** 0.5) if sxx and syy else 0.0
         out.append({
             "id": os.path.basename(path)[:-5],
             "front": d.get("front"), "model": str(model or "?")[:22],
@@ -1326,9 +1342,78 @@ def stress_results_api():
             "throttling": bool(sl.get("throttling_detected")),
             "throughput_per_minute": tpm,
             "temp_series": temp,
+            "duration_min": n,
+            "avg_tpm": round(avg_tpm, 2),
+            "slope_per_min": round(slope, 3),
+            "corr_time": round(corr, 3),
             "primary_unit": (d.get("scorecard", {}).get("primary_metric", {}) or {}).get("unit", ""),
         })
     return out
+
+
+BATCH_MODES = {"stress", "perf", "mixed"}
+_batch_lock = threading.Lock()
+
+
+def batch_status():
+    """Estado do batch runner (run-batch.sh): lê batch.status e confere o PID.
+
+    O arquivo batch.status pode ficar com running=true se o processo morreu de
+    forma abrupta; por isso o PID manda: só é 'running' se o processo existe.
+    """
+    st = {"running": False, "mode": None, "count": 0, "errors": 0,
+          "current": "-", "mins_left": 0, "round": 0, "temp_c": "",
+          "started": 0, "deadline": 0}
+    try:
+        with open(os.path.join(BASE, "batch.status")) as fh:
+            st.update(json.load(fh))
+    except Exception:
+        pass
+    alive = False
+    try:
+        with open(os.path.join(BASE, "batch.pid")) as fh:
+            pid = int(fh.read().strip())
+        os.kill(pid, 0)
+        alive = True
+    except Exception:
+        alive = False
+    st["running"] = bool(st.get("running")) and alive
+    return st
+
+
+def start_batch(mode, minutes):
+    """Inicia run-batch.sh em segundo plano (sessão própria) se nada estiver ativo."""
+    if mode not in BATCH_MODES:
+        raise ValueError(f"mode deve ser um de {sorted(BATCH_MODES)}")
+    if not isinstance(minutes, (int, float)) or not 1 <= minutes <= 1440:
+        raise ValueError("minutes deve estar entre 1 e 1440")
+    with _batch_lock:
+        if batch_status()["running"]:
+            return False
+        script = os.path.join(BASE, "run-batch.sh")
+        log = open(os.path.join(BASE, "batch.log"), "a")
+        subprocess.Popen(["bash", script, "--mode", mode, "--minutes", str(int(minutes))],
+                         cwd=BASE, stdout=log, stderr=log, stdin=subprocess.DEVNULL,
+                         start_new_session=True)
+        return True
+
+
+def stop_batch():
+    """Mata o grupo de processos do batch (runner + benchmark em curso)."""
+    try:
+        with open(os.path.join(BASE, "batch.pid")) as fh:
+            pid = int(fh.read().strip())
+    except Exception:
+        return False
+    try:
+        os.killpg(os.getpgid(pid), signal.SIGTERM)
+        return True
+    except Exception:
+        try:
+            os.kill(pid, signal.SIGTERM)
+            return True
+        except Exception:
+            return False
 
 
 def _write_custom_stress_profile(duration_min, name="custom_stress"):
@@ -1564,6 +1649,9 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/stress-results":
             self._json_response({"results": stress_results_api()})
 
+        elif path == "/api/batch":
+            self._json_response(batch_status())
+
         elif path == "/api/results-html":
             qs = parse_qs(urlparse(self.path).query)
             front = qs.get("front", ["all"])[0]
@@ -1650,6 +1738,25 @@ class Handler(BaseHTTPRequestHandler):
             self._json_response({"status": "started" if started else "busy",
                                  "logic": logic, "profile": profile,
                                  "started": started, "busy": busy})
+
+        elif path == "/api/batch":
+            # Dispara uma campanha de testes NO device (run-batch.sh): sweep de
+            # todos os modelos em estresse/perf/misto por N minutos. Roda sozinho
+            # sem depender do PC; o dashboard mostra progresso e pode parar.
+            mode = data.get("mode", "stress")
+            minutes = data.get("minutes", 120)
+            try:
+                started = start_batch(mode, minutes)
+            except ValueError as exc:
+                self._json_response({"error": str(exc)}, 400)
+                return
+            if not started:
+                self._json_response({"error": "batch já em andamento"}, 409)
+                return
+            self._json_response({"status": "started", "mode": mode, "minutes": int(minutes)})
+
+        elif path == "/api/batch/stop":
+            self._json_response({"stopped": stop_batch()})
 
         elif path == "/api/switch-model":
             result = do_slm_switch(data.get("model", ""))

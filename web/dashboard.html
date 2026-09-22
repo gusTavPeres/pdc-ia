@@ -358,6 +358,31 @@ canvas{max-height:180px}
     </p>
   </div>
 
+  <div class="card" style="margin-bottom:14px">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+      <h2>Campanhas automáticas (batch)</h2>
+      <span id="batch-badge" style="font-size:.72rem;color:var(--dim)">—</span>
+    </div>
+    <p style="font-size:.78rem;color:var(--sub);margin:4px 0 10px">
+      Roda uma bateria de testes <b>no próprio device</b>, varrendo todos os modelos por horas,
+      sem depender do PC. <b>Estresse</b> = carga sustentada em todos os modelos (foco em throttling);
+      <b>Desempenho</b> = varredura quick+standard; <b>Misto</b> = os dois.
+    </p>
+    <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center">
+      <select id="batch-mode" style="min-width:170px">
+        <option value="stress">Estresse (sustentado)</option>
+        <option value="perf">Desempenho (quick+standard)</option>
+        <option value="mixed">Misto</option>
+      </select>
+      <input id="batch-min" type="number" min="1" max="1440" value="120" style="width:90px"> <span style="font-size:.78rem;color:var(--sub)">min</span>
+      <button class="btn sm" onclick="document.getElementById('batch-min').value=120">2h</button>
+      <button class="btn sm" onclick="batchUntil6()">até 6h</button>
+      <button class="btn primary" onclick="startBatch()">Iniciar</button>
+      <button class="btn" onclick="stopBatch()">Parar</button>
+    </div>
+    <div id="batch-status" style="font-size:.82rem;color:var(--sub);margin-top:10px">—</div>
+  </div>
+
   <div class="grid g2" style="margin-bottom:14px">
     <div class="card">
       <h2>Perfis prontos</h2>
@@ -420,6 +445,15 @@ canvas{max-height:180px}
       <div><div style="font-size:.78rem;color:var(--sub);margin-bottom:4px">Throughput por minuto (queda = degradação)</div><canvas id="chart-stress-tpm" height="140"></canvas></div>
     </div>
     <div style="margin-top:14px"><div style="font-size:.78rem;color:var(--sub);margin-bottom:4px">Comparativo — degradação (%) e temp. máx (°C)</div><canvas id="chart-stress-cmp" height="120"></canvas></div>
+    <div style="margin-top:14px">
+      <div style="font-size:.78rem;color:var(--sub);margin-bottom:4px">Média e correlação desempenho×tempo</div>
+      <div style="overflow-x:auto"><table id="stress-stats" style="width:100%;border-collapse:collapse;font-size:.76rem"></table></div>
+      <p style="font-size:.72rem;color:var(--dim);margin:6px 0 0">
+        <b>Média</b> = throughput médio no teste. <b>Queda/min</b> = inclinação da reta (unid./min; negativa = piora).
+        <b>Corr. tempo</b> = correlação de Pearson entre throughput e minuto: perto de <b>−1</b> degradação constante,
+        perto de <b>0</b> estável ao longo do tempo.
+      </p>
+    </div>
   </div>
 </div>
 
@@ -907,7 +941,57 @@ function renderStressCharts() {
       {label:'Degradação %', backgroundColor:'#e5484d', data: sel.map(x=>x.degradation_pct), yAxisID:'y'},
       {label:'Temp máx °C', backgroundColor:'#f08c00', data: sel.map(x=>x.temp_max_c), yAxisID:'y2'}
     ]}, options:{responsive:true, animation:false, scales:{y:{position:'left',title:{display:true,text:'degr %'}},y2:{position:'right',grid:{drawOnChartArea:false},title:{display:true,text:'°C'}}}, plugins:{legend:{labels:{boxWidth:10,font:{size:10}}}}}});
+  // tabela média/correlação desempenho×tempo
+  const stat = document.getElementById('stress-stats');
+  if(stat) {
+    const head = '<tr style="text-align:left;border-bottom:1px solid var(--border)"><th>Teste</th><th>Dur</th><th>Média</th><th>Queda/min</th><th>Corr. tempo</th><th>Degr.%</th><th>Tmáx</th></tr>';
+    stat.innerHTML = head + sel.map(x =>
+      '<tr style="border-bottom:1px solid var(--border)"><td>'+label(x)+' '+(x.primary_unit||'')+'</td><td>'+x.duration_min+'m</td><td>'+x.avg_tpm+'</td><td>'+x.slope_per_min+'</td><td class="'+corrClass(x.corr_time)+'">'+x.corr_time+'</td><td>'+x.degradation_pct+'</td><td>'+x.temp_max_c+'°C</td></tr>'
+    ).join('') || (head+'<tr><td colspan=7 style="color:var(--dim)">selecione testes acima</td></tr>');
+  }
 }
+let batchTimer = null;
+function batchUntil6() {
+  const now = new Date(), t = new Date(now);
+  t.setHours(6,0,0,0); if(t <= now) t.setDate(t.getDate()+1);
+  document.getElementById('batch-min').value = Math.max(1, Math.round((t-now)/60000));
+}
+async function startBatch() {
+  const mode = document.getElementById('batch-mode').value;
+  const minutes = parseInt(document.getElementById('batch-min').value)||120;
+  if(!confirm('Iniciar batch "'+mode+'" por '+minutes+' min neste device?')) return;
+  try {
+    const r = await fetch('/api/batch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode,minutes})});
+    const d = await r.json();
+    if(!r.ok){ alert('Erro: '+(d.error||r.status)); return; }
+    pollBatch();
+  } catch(e){ alert('Erro: '+e.message); }
+}
+async function stopBatch() {
+  if(!confirm('Parar o batch em andamento?')) return;
+  try { await fetch('/api/batch/stop',{method:'POST'}); setTimeout(pollBatch, 800); } catch(e){}
+}
+async function pollBatch() {
+  try {
+    const s = await (await fetch('/api/batch')).json();
+    const el = document.getElementById('batch-status'), badge = document.getElementById('batch-badge');
+    if(s.running) {
+      const end = s.deadline ? new Date(s.deadline*1000).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}) : '?';
+      el.innerHTML = '<b class="stress-ok">● rodando</b> · '+s.mode+' · rodada '+s.round+' · '+s.count+' testes'
+        + (s.errors?(' · <span class="stress-bad">'+s.errors+' erros</span>'):'')
+        + ' · agora: '+(s.current||'-')+' · '+s.mins_left+' min restantes (até '+end+')'
+        + (s.temp_c?(' · '+s.temp_c+'°C'):'');
+      badge.innerHTML = '<b class="stress-ok">ativo</b>';
+      if(!batchTimer) batchTimer = setInterval(pollBatch, 10000);
+    } else {
+      el.innerHTML = s.count ? ('Último batch: '+s.mode+' · '+s.count+' testes'+(s.errors?(' · '+s.errors+' erros'):'')+' · encerrado.')
+                             : 'Nenhuma campanha em andamento.';
+      badge.textContent = '—';
+      if(batchTimer){ clearInterval(batchTimer); batchTimer = null; }
+    }
+  } catch(e){}
+}
+function corrClass(v){ return (v !== undefined && v <= -0.5) ? 'stress-bad' : 'stress-ok'; }
 function showTab(name) {
   document.querySelectorAll('.tab').forEach((t,i) => {
     const pages = ['monitor','benchmark','estresse','inference','results','compare','hardware','config'];
@@ -915,7 +999,7 @@ function showTab(name) {
   });
   document.querySelectorAll('.page').forEach(p => p.classList.toggle('active', p.id === 'page-'+name));
   if(name === 'results') refreshResultsIfNeeded(true, true);
-  if(name === 'estresse') { stressLogicChange(); loadStressGraphs(); }
+  if(name === 'estresse') { stressLogicChange(); loadStressGraphs(); pollBatch(); }
   if(name === 'compare') populateCompareSelects();
   if(name === 'hardware') {
     loadContainerRuntime();
