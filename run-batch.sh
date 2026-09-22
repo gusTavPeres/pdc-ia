@@ -3,7 +3,7 @@
 # pela plataforma (endpoints /api/batch do dashboard). Escreve batch.status
 # (JSON) e batch.pid para o dashboard mostrar progresso e permitir parar.
 #
-#   bash run-batch.sh --mode stress|perf|mixed --minutes N
+#   bash run-batch.sh --mode stress|perf|mixed|concorrente --minutes N
 #
 # Nao sobe containers (ja estao up). Resultados caem em results/ e o dashboard
 # le direto (aba Estresse -> Graficos). Roda sob setsid: parar = matar o grupo.
@@ -69,6 +69,17 @@ run_test(){
 models_of(){ case "$1" in vision) echo "$VISION_MODELS";; slm) echo "$SLM_MODELS";; audio) echo "$AUDIO_MODELS";; esac; }
 
 sweep_stress(){ local prof="$1"; for front in vision slm audio; do for model in $(models_of $front); do time_left || return; switch_model "$front" "$model"; run_test "$front" "$model" "$prof"; done; done; }
+sweep_concorrente(){ # estressa as 3 frentes AO MESMO TEMPO (pior caso termico do device)
+  local prof="$1"
+  for front in vision slm audio; do switch_model "$front" "${DEF[$front]}"; done
+  CUR="concorrente(3 frentes)/$prof"; write_status true
+  local pids=() rc=0
+  for front in vision slm audio; do ( ./pdc benchmark "$front" --profile "$prof" >/dev/null 2>&1 ) & pids+=($!); done
+  for p in "${pids[@]}"; do wait "$p" || rc=1; done
+  COUNT=$((COUNT+3)); [ $rc -ne 0 ] && ERRS=$((ERRS+1))
+  echo "[$(date +%H:%M:%S)] concorrente/$prof rc=$rc ($(mins_left)min restantes)"
+  write_status true
+}
 sweep_perf(){ for front in vision slm audio; do for model in $(models_of $front); do time_left || return; switch_model "$front" "$model"; run_test "$front" "$model" quick; time_left || return; run_test "$front" "$model" standard; done; done; }
 deep_stress(){ for front in slm vision audio; do time_left || return; [ "$(mins_left)" -ge 65 ] || return; switch_model "$front" "${DEF[$front]}"; run_test "$front" "${DEF[$front]}" torture; done; }
 
@@ -79,6 +90,7 @@ while time_left; do
     stress) sweep_stress estresse_medio; [ $((ROUND % 3)) -eq 0 ] && deep_stress;;
     perf)   sweep_perf;;
     mixed)  sweep_perf; sweep_stress estresse_medio;;
+    concorrente) sweep_concorrente estresse_medio;;
     *) echo "modo invalido: $MODE"; exit 2;;
   esac
   ROUND=$((ROUND+1))

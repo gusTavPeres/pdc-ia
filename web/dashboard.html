@@ -369,14 +369,16 @@ canvas{max-height:180px}
       <b>Desempenho</b> = varredura quick+standard; <b>Misto</b> = os dois.
     </p>
     <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center">
-      <select id="batch-mode" style="min-width:170px">
+      <select id="batch-mode" style="min-width:190px">
         <option value="stress">Estresse (sustentado)</option>
+        <option value="concorrente">Concorrente (3 frentes juntas)</option>
         <option value="perf">Desempenho (quick+standard)</option>
         <option value="mixed">Misto</option>
       </select>
       <input id="batch-min" type="number" min="1" max="1440" value="120" style="width:90px"> <span style="font-size:.78rem;color:var(--sub)">min</span>
       <button class="btn sm" onclick="document.getElementById('batch-min').value=120">2h</button>
-      <button class="btn sm" onclick="batchUntil6()">até 6h</button>
+      <button class="btn sm" onclick="document.getElementById('batch-min').value=360">6h</button>
+      <button class="btn sm" onclick="document.getElementById('batch-min').value=720">12h</button>
       <button class="btn primary" onclick="startBatch()">Iniciar</button>
       <button class="btn" onclick="stopBatch()">Parar</button>
     </div>
@@ -944,18 +946,14 @@ function renderStressCharts() {
   // tabela média/correlação desempenho×tempo
   const stat = document.getElementById('stress-stats');
   if(stat) {
-    const head = '<tr style="text-align:left;border-bottom:1px solid var(--border)"><th>Teste</th><th>Dur</th><th>Média</th><th>Queda/min</th><th>Corr. tempo</th><th>Degr.%</th><th>Tmáx</th></tr>';
-    stat.innerHTML = head + sel.map(x =>
-      '<tr style="border-bottom:1px solid var(--border)"><td>'+label(x)+' '+(x.primary_unit||'')+'</td><td>'+x.duration_min+'m</td><td>'+x.avg_tpm+'</td><td>'+x.slope_per_min+'</td><td class="'+corrClass(x.corr_time)+'">'+x.corr_time+'</td><td>'+x.degradation_pct+'</td><td>'+x.temp_max_c+'°C</td></tr>'
-    ).join('') || (head+'<tr><td colspan=7 style="color:var(--dim)">selecione testes acima</td></tr>');
+    const nd = v => (v===null||v===undefined) ? '<span style="color:var(--dim)">n/d</span>' : v;
+    const head = '<tr style="text-align:left;border-bottom:1px solid var(--border)"><th>Teste</th><th>Dur</th><th>Média</th><th>Queda/min</th><th>Corr. tempo</th><th>Degr.%</th><th>Tmáx</th><th>Potência</th><th>Perf/W</th><th>J/inf</th></tr>';
+    stat.innerHTML = head + (sel.map(x =>
+      '<tr style="border-bottom:1px solid var(--border)"><td>'+label(x)+' '+(x.primary_unit||'')+'</td><td>'+x.duration_min+'m</td><td>'+x.avg_tpm+'</td><td>'+x.slope_per_min+'</td><td class="'+corrClass(x.corr_time)+'">'+x.corr_time+'</td><td>'+x.degradation_pct+'</td><td>'+x.temp_max_c+'°C</td><td>'+nd(x.avg_power_w)+(x.avg_power_w?'W':'')+'</td><td>'+nd(x.perf_per_watt)+'</td><td>'+nd(x.energy_per_inf_j)+'</td></tr>'
+    ).join('') || '<tr><td colspan=10 style="color:var(--dim)">selecione testes acima</td></tr>');
   }
 }
 let batchTimer = null;
-function batchUntil6() {
-  const now = new Date(), t = new Date(now);
-  t.setHours(6,0,0,0); if(t <= now) t.setDate(t.getDate()+1);
-  document.getElementById('batch-min').value = Math.max(1, Math.round((t-now)/60000));
-}
 async function startBatch() {
   const mode = document.getElementById('batch-mode').value;
   const minutes = parseInt(document.getElementById('batch-min').value)||120;

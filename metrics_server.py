@@ -1309,6 +1309,9 @@ def stress_results_api():
         if profile not in STRESS_PROFILES or not tpm or len(tpm) < 3:
             continue
         ru = b.get("resource_usage", {})
+        # eficiencia energetica (so o Jetson tem sensor de potencia; Pi vem None)
+        power = ru.get("avg_power_w")
+        energy_per_inf = ru.get("energy_per_inference_j")
         temp = []
         for s in ru.get("timeseries", []):
             t = s.get("timestamp")
@@ -1346,12 +1349,15 @@ def stress_results_api():
             "avg_tpm": round(avg_tpm, 2),
             "slope_per_min": round(slope, 3),
             "corr_time": round(corr, 3),
+            "avg_power_w": round(power, 2) if isinstance(power, (int, float)) else None,
+            "energy_per_inf_j": round(energy_per_inf, 2) if isinstance(energy_per_inf, (int, float)) else None,
+            "perf_per_watt": round(avg_tpm / power, 3) if isinstance(power, (int, float)) and power else None,
             "primary_unit": (d.get("scorecard", {}).get("primary_metric", {}) or {}).get("unit", ""),
         })
     return out
 
 
-BATCH_MODES = {"stress", "perf", "mixed"}
+BATCH_MODES = {"stress", "perf", "mixed", "concorrente"}
 _batch_lock = threading.Lock()
 
 
