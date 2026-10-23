@@ -1,0 +1,46 @@
+# SLM na GPU via Vulkan (RADV) — p/ GPUs AMD/iGPU (ex.: Radeon 890M do oculink).
+# Base Ubuntu 24.04 porque o RADV/Mesa do container precisa ser novo o bastante
+# pra conhecer a GPU (GFX1150 exige Mesa >=24); o slim do Debian tem Mesa velho.
+FROM ubuntu:24.04
+ENV DEBIAN_FRONTEND=noninteractive PIP_BREAK_SYSTEM_PACKAGES=1
+
+RUN set -eux; \
+    packages="python3 python3-pip build-essential cmake git curl ca-certificates \
+              libvulkan-dev vulkan-tools mesa-vulkan-drivers libgomp1 \
+              glslc glslang-tools glslang-dev spirv-headers spirv-tools"; \
+    for attempt in 1 2 3; do \
+        rm -rf /var/lib/apt/lists/*; \
+        if apt-get -o Acquire::Retries=3 update \
+            && apt-get -o Acquire::Retries=3 install -y --no-install-recommends $packages; then \
+            break; \
+        fi; \
+        if [ "$attempt" -eq 3 ]; then exit 1; fi; \
+        sleep 5; \
+    done; \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY shared/requirements.txt /app/shared_req.txt
+RUN pip3 install --no-cache-dir -r /app/shared_req.txt
+RUN pip3 install --no-cache-dir fastapi "uvicorn[standard]"
+
+# llama-cpp-python com backend Vulkan: offloada layers pra qualquer GPU Vulkan,
+# sem CUDA e sem ROCm. Mesma API n_gpu_layers do caminho CUDA.
+ENV CMAKE_ARGS="-DGGML_VULKAN=on" \
+    FORCE_CMAKE=1
+RUN pip3 install --no-cache-dir llama-cpp-python==0.3.34 --no-binary llama-cpp-python
+
+COPY slm/app/ /app/app/
+
+ENV PYTHONPATH=/app \
+    PDC_FRONT=slm \
+    PDC_GPU_MODE=auto \
+    PDC_GPU_BACKEND=vulkan
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=300s --retries=10 \
+    CMD curl -sf http://localhost:8000/health || exit 1
+
+EXPOSE 8000
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -108,12 +108,15 @@ def _supports_current_cuda_images():
     return os.uname().machine.lower() in {"x86_64", "amd64"}
 
 
-def _compose_cmd(front, gpu_enabled=False):
+def _compose_cmd(front, gpu_enabled=False, vulkan=False):
     compose_file = BASE_DIR / FRONTS[front]["compose"]
     cmd = ["docker", "compose", "-f", str(compose_file)]
     jetson_file = compose_file.with_name("docker-compose.jetson.yml")
     gpu_file = compose_file.with_name("docker-compose.gpu.yml")
-    if gpu_enabled and _is_jetson() and jetson_file.exists():
+    vulkan_file = compose_file.with_name("docker-compose.vulkan.yml")
+    if vulkan and vulkan_file.exists():
+        cmd.extend(["-f", str(vulkan_file)])   # GPU AMD/iGPU via Vulkan (RADV)
+    elif gpu_enabled and _is_jetson() and jetson_file.exists():
         cmd.extend(["-f", str(jetson_file)])   # GPU do Jetson (imagem l4t prebuilt)
     elif gpu_enabled and gpu_file.exists():
         cmd.extend(["-f", str(gpu_file)])       # GPU dGPU x86
@@ -155,10 +158,10 @@ def _container_limits(front):
         return defaults
 
 
-def _runtime_env(gpu_enabled, front):
+def _runtime_env(gpu_enabled, front, vulkan=False):
     env = os.environ.copy()
-    env["PDC_GPU_MODE"] = "auto" if gpu_enabled else "cpu"
-    env["PDC_IMAGE_VARIANT"] = "gpu" if gpu_enabled else "cpu"
+    env["PDC_GPU_MODE"] = "auto" if (gpu_enabled or vulkan) else "cpu"
+    env["PDC_IMAGE_VARIANT"] = "vulkan" if vulkan else ("gpu" if gpu_enabled else "cpu")
     limits = _container_limits(front)
     env["PDC_CPU_LIMIT"] = str(limits["cpu_limit"] or 0)
     env["PDC_MEMORY_LIMIT"] = (
@@ -306,6 +309,7 @@ def cmd_detect(args):
 def cmd_build(args):
     """Constrói imagens Docker das frentes."""
     fronts = list(FRONTS.keys()) if args.front == "all" else [args.front]
+    vulkan = getattr(args, "vulkan", False)
     if args.cpu and args.gpu:
         err("Use apenas um modo: --cpu ou --gpu")
         raise SystemExit(1)
@@ -330,10 +334,10 @@ def cmd_build(args):
         if front not in FRONTS:
             err(f"Frente desconhecida: {front}. Use: {', '.join(FRONTS.keys())} ou all")
             sys.exit(1)
-        info(f"Construindo {front} ({'GPU' if gpu_enabled else 'CPU'})...")
-        env = _runtime_env(gpu_enabled, front)
+        info(f"Construindo {front} ({'Vulkan' if vulkan else 'GPU' if gpu_enabled else 'CPU'})...")
+        env = _runtime_env(gpu_enabled, front, vulkan=vulkan)
         result = subprocess.run(
-            _compose_cmd(front, gpu_enabled=gpu_enabled) + ["build"],
+            _compose_cmd(front, gpu_enabled=gpu_enabled, vulkan=vulkan) + ["build"],
             cwd=BASE_DIR,
             env=env,
         )
@@ -349,6 +353,7 @@ def cmd_build(args):
 def cmd_up(args):
     """Sobe containers Docker."""
     fronts = list(FRONTS.keys()) if args.front == "all" else [args.front]
+    vulkan = getattr(args, "vulkan", False)
     if args.cpu and args.gpu:
         err("Use apenas um modo: --cpu ou --gpu")
         sys.exit(1)
@@ -378,9 +383,9 @@ def cmd_up(args):
         if front not in FRONTS:
             err(f"Frente desconhecida: {front}")
             sys.exit(1)
-        cmd = _compose_cmd(front, gpu_enabled=gpu_enabled) + ["up", "-d"]
-        info(f"Subindo {front} ({'GPU' if gpu_enabled else 'CPU'})...")
-        env = _runtime_env(gpu_enabled, front)
+        cmd = _compose_cmd(front, gpu_enabled=gpu_enabled, vulkan=vulkan) + ["up", "-d"]
+        info(f"Subindo {front} ({'Vulkan' if vulkan else 'GPU' if gpu_enabled else 'CPU'})...")
+        env = _runtime_env(gpu_enabled, front, vulkan=vulkan)
         result = subprocess.run(cmd, cwd=BASE_DIR, env=env)
         if result.returncode == 0:
             ok(f"{front} subiu")
@@ -1270,12 +1275,14 @@ def main():
     p_build.add_argument("front", help="Nome da frente (vision|slm|audio|all)")
     p_build.add_argument("--gpu", action="store_true", help="Constrói variante NVIDIA")
     p_build.add_argument("--cpu", action="store_true", help="Constrói variante CPU portátil")
+    p_build.add_argument("--vulkan", action="store_true", help="Constrói variante GPU AMD/iGPU via Vulkan")
 
     # up
     p_up = sub.add_parser("up", help="Sobe containers")
     p_up.add_argument("front", help="Nome da frente ou 'all'")
     p_up.add_argument("--gpu", action="store_true", help="Força uso de GPU")
     p_up.add_argument("--cpu", action="store_true", help="Força uso de CPU")
+    p_up.add_argument("--vulkan", action="store_true", help="Usa GPU via Vulkan (AMD/iGPU)")
 
     # down
     p_down = sub.add_parser("down", help="Para containers")

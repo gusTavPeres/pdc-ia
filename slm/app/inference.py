@@ -183,7 +183,10 @@ def get_benchmark_fn():
 
 
 def get_device() -> str:
-    return "cuda" if _n_gpu_layers > 0 else "cpu"
+    # backend real vem do env (cuda por padrão; vulkan no caminho AMD/iGPU)
+    if _n_gpu_layers > 0:
+        return os.environ.get("PDC_GPU_BACKEND", "cuda")
+    return "cpu"
 
 
 def get_model_name() -> str:

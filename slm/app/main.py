@@ -117,7 +117,7 @@ async def health():
         "front": "slm",
         "model": model,
         "device": get_device(),
-        "gpu": get_device() == "cuda",
+        "gpu": get_device() != "cpu",
     }
     return payload if is_ok else JSONResponse(payload, status_code=503)
 

@@ -1,0 +1,17 @@
+services:
+  pdc-slm:
+    image: pdc-slm:${PDC_IMAGE_VARIANT:-vulkan}
+    build:
+      dockerfile: slm/Dockerfile.vulkan
+    devices:
+      - /dev/dri:/dev/dri          # GPU render node (RADV usa /dev/dri/renderD*)
+    group_add:
+      # ponytail: GIDs render/video do HOST oculink. Outro host AMD -> conferir
+      # `getent group render video` e ajustar. Container roda como root, entao
+      # normalmente ja acessa /dev/dri; isto e cinto-e-suspensorio.
+      - "992"   # render
+      - "44"    # video
+    environment:
+      - PDC_GPU_MODE=auto
+      - PDC_IMAGE_VARIANT=vulkan
+      - PDC_GPU_BACKEND=vulkan
