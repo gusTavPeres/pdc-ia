@@ -3,7 +3,13 @@ services:
     image: pdc-audio:${PDC_IMAGE_VARIANT:-gpu}
     build:
       dockerfile: audio/Dockerfile.gpu
-    gpus: all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     environment:
       - PDC_GPU_MODE=auto
       - NVIDIA_VISIBLE_DEVICES=all

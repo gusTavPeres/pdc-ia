@@ -4,7 +4,13 @@ services:
     build:
       args:
         TORCH_INDEX_URL: https://download.pytorch.org/whl/cu128
-    gpus: all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     environment:
       - PDC_GPU_MODE=auto
       - NVIDIA_VISIBLE_DEVICES=all

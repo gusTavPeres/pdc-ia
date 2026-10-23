@@ -23,7 +23,9 @@ COPY shared/requirements.txt /app/shared_req.txt
 RUN pip install --no-cache-dir -r /app/shared_req.txt
 RUN pip install --no-cache-dir fastapi "uvicorn[standard]"
 
-ENV CMAKE_ARGS="-DGGML_CUDA=on" \
+# ponytail: arch 86 = compute capability da A400 (minipc). Build ~8x mais rapido
+# que o default multi-arch. Outro dGPU x86 -> ajustar CMAKE_CUDA_ARCHITECTURES.
+ENV CMAKE_ARGS="-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=86" \
     CUDACXX=/usr/local/cuda/bin/nvcc \
     FORCE_CMAKE=1 \
     LD_LIBRARY_PATH=/usr/local/cuda/lib64/stubs:/usr/local/cuda/lib64 \
