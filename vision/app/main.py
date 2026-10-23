@@ -126,7 +126,7 @@ async def health():
         "front": "vision",
         "model": model,
         "device": get_device(),
-        "gpu": get_device() == "cuda",
+        "gpu": get_device() != "cpu",
     }
     return payload if is_ok else JSONResponse(payload, status_code=503)
 
@@ -142,7 +142,7 @@ async def info():
         "model": {
             "name": get_model_name(),
             "device": get_device(),
-            "gpu": get_device() == "cuda",
+            "gpu": get_device() != "cpu",
             "type": "object_detection",
         },
         "available_models": list(_models_config.get("vision", {}).get("models", {}).keys()),
@@ -177,7 +177,7 @@ async def switch_model(request: SwitchModelRequest):
             "loaded": {
                 "name": get_model_name(),
                 "device": get_device(),
-                "gpu": get_device() == "cuda",
+                "gpu": get_device() != "cpu",
             },
         }
     except ValueError as e:

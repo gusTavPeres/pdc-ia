@@ -1,0 +1,15 @@
+services:
+  pdc-audio:
+    image: pdc-audio:${PDC_IMAGE_VARIANT:-vulkan}
+    build:
+      dockerfile: audio/Dockerfile.vulkan
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      # ponytail: GIDs render/video do HOST oculink. Outro host AMD -> conferir.
+      - "992"   # render
+      - "44"    # video
+    environment:
+      - PDC_GPU_MODE=auto
+      - PDC_IMAGE_VARIANT=vulkan
+      - PDC_GPU_BACKEND=vulkan

@@ -149,7 +149,7 @@ async def health():
         "asr": get_asr_model_name() if asr_ok else "não carregado",
         "tts": get_tts_model_name() if tts_ok else "não carregado",
         "device": get_asr_device(),
-        "gpu": get_asr_device() == "cuda",
+        "gpu": get_asr_device() != "cpu",
     }
     return payload if is_ok else JSONResponse(payload, status_code=503)
 

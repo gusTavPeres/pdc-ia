@@ -151,3 +151,15 @@ def is_asr_loaded() -> bool:
 def get_asr_model_name() -> str:
     """Retorna o identificador do modelo ASR carregado."""
     return _asr_model_id or "não carregado"
+
+
+# Backend Vulkan (whisper.cpp / GPU AMD-iGPU): substitui faster-whisper.
+# CPU/CUDA seguem usando a implementação acima (faster-whisper).
+if os.environ.get("PDC_GPU_BACKEND") == "vulkan":
+    from app.asr_whispercpp import (  # noqa: F401,F811
+        get_asr_device,
+        get_asr_model_name,
+        is_asr_loaded,
+        load_asr,
+        transcribe,
+    )

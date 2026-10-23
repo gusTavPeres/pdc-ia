@@ -19,6 +19,40 @@ _model_path = None
 _model_lock = threading.RLock()
 
 
+def _enable_ncnn_vulkan():
+    """Força o backend Vulkan no ncnn (ultralytics não liga por padrão).
+    Patcha load_param p/ setar use_vulkan_compute antes de carregar os pesos."""
+    import ncnn
+    if getattr(ncnn.Net, "_pdc_vk", False):
+        return
+    _orig = ncnn.Net.load_param
+
+    def _patched(self, *a, **k):
+        try:
+            self.opt.use_vulkan_compute = True
+        except Exception:
+            pass
+        return _orig(self, *a, **k)
+
+    ncnn.Net.load_param = _patched
+    ncnn.Net._pdc_vk = True
+
+
+def _load_vulkan(model_path):
+    """YOLO exportado p/ ncnn rodando na GPU via Vulkan (AMD/iGPU)."""
+    global _model, _device, _model_path
+    _enable_ncnn_vulkan()
+    from ultralytics import YOLO
+    ncnn_dir = os.path.splitext(model_path)[0] + "_ncnn_model"
+    if not os.path.isdir(ncnn_dir):
+        print(f"[vision] exportando {os.path.basename(model_path)} -> ncnn")
+        YOLO(model_path).export(format="ncnn")
+    _model = YOLO(ncnn_dir)
+    _model_path = model_path
+    _device = "vulkan"
+    print(f"[vision] ncnn+Vulkan carregado: {os.path.basename(ncnn_dir)}")
+
+
 def load_model(config: dict) -> None:
     """Carrega o modelo em CUDA quando disponível, com fallback para CPU."""
     global _model, _device, _model_path
@@ -26,6 +60,10 @@ def load_model(config: dict) -> None:
     with _model_lock:
         model_path = get_or_download(config, cache_dir="/app/data/models")
         print(f"[vision] Modelo em: {model_path}")
+
+        if os.environ.get("PDC_GPU_BACKEND") == "vulkan":
+            _load_vulkan(model_path)
+            return
 
         device = "cpu"
         try:
