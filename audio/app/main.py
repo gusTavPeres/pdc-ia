@@ -346,7 +346,20 @@ async def benchmark_endpoint(request: BenchmarkRequest):
             return synthesize_with_metrics(p)
 
     elif mode == "asr":
-        _pregen_wav = synthesize("Teste de inferência de reconhecimento de voz com whisper.")
+        if is_tts_loaded():
+            _pregen_wav = synthesize("Teste de inferência de reconhecimento de voz com whisper.")
+        else:
+            # imagem Vulkan (AMD) não traz piper/TTS -> amostra de fala baixada
+            import urllib.request
+            _sample = "/app/data/models/asr_sample.wav"
+            if not os.path.exists(_sample):
+                os.makedirs(os.path.dirname(_sample), exist_ok=True)
+                urllib.request.urlretrieve(
+                    "https://github.com/ggml-org/whisper.cpp/raw/master/samples/jfk.wav",
+                    _sample + ".tmp")
+                os.replace(_sample + ".tmp", _sample)
+            with open(_sample, "rb") as _f:
+                _pregen_wav = _f.read()
 
         def bench_fn():
             result = transcribe(_pregen_wav)
