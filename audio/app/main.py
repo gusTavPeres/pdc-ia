@@ -1,5 +1,6 @@
 """API dos serviços de ASR e TTS."""
 
+import os
 import sys
 import threading
 import time
@@ -142,7 +143,9 @@ app = FastAPI(
 async def health():
     asr_ok = is_asr_loaded()
     tts_ok = is_tts_loaded()
-    is_ok = asr_ok and tts_ok
+    # backend Vulkan (AMD) não traz piper/TTS no imagem -> health = ASR-only
+    tts_required = os.environ.get("PDC_GPU_BACKEND") != "vulkan"
+    is_ok = asr_ok and (tts_ok or not tts_required)
     payload = {
         "status": "ok" if is_ok else "degraded",
         "front": "audio",
