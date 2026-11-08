@@ -32,3 +32,6 @@ venv/
 
 # Docker
 *.log
+
+# resultados locais das campanhas (tools/campanhas)
+tools/campanhas/results/
